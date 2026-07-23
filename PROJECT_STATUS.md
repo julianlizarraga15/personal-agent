@@ -8,8 +8,9 @@ Last updated: 2026-07-23
 - A model-backed conversational agent prototype is present in `src/agent.py`.
 - Telegram integration can handle ordinary messages in the default workspace, `/project`, `/new`, `/stop`, and legacy `/run`.
 - File writes and dedicated Git commit/push actions now pause for Telegram approval via `/approve <id>` or `/reject <id>`.
+- The conversational agent now has the OpenAI Responses API hosted `web_search` tool for current external information and source citations.
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
-- The initial project files are committed locally on `codex/initial-project` (`af3b7c1`). The branch has not been pushed because no `origin` remote is configured and the available GitHub CLI token is invalid.
+- The initial project files are committed on `codex/initial-project` (`50e7782`) and the branch tracks `origin/codex/initial-project`.
 - The live Telegram/Docker deployment has not been verified because no Docker daemon is available in this environment.
 
 ## What we are building
@@ -35,7 +36,7 @@ Last updated: 2026-07-23
 
 ## Validation
 
-- Current validation: `PYTHONPATH=src python3 -m unittest discover -s tests` passes (16 tests).
+- Current validation: `PYTHONPATH=src python3 -m unittest discover -s tests` passes (18 tests); the worktree is clean.
 - The required literal `python -m pytest` validation is unavailable because `python` is not installed in the environment.
 - Python compilation and `docker compose config` pass with placeholder validation environment values.
 - No live Docker build, bot launch, Telegram exchange, model call, or push has been validated here.

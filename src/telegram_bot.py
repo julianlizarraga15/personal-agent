@@ -395,7 +395,6 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
         await message.reply_text("I’m still working on the previous request.")  # type: ignore[attr-defined]
         return
     session.running = True
-    await message.reply_text("I’m on it…")  # type: ignore[attr-defined]
     loop = asyncio.get_running_loop()
 
     def notify(request: PendingApproval) -> None:

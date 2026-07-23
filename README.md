@@ -58,7 +58,7 @@ Add input validation to the API
 Now add tests for that validation
 ```
 
-The bot calls the OpenAI Responses API directly and gives the model constrained tools for listing, reading, editing, testing, and inspecting Git. File writes and Git commit/push actions pause for explicit approval; approve or reject them with `/approve <id>` or `/reject <id>`. `/new` starts a fresh conversation in the default workspace; `/stop` forgets the session. The original one-shot `/run` worker form remains supported. Sessions are kept in memory and are lost when the bot restarts; only one task runs per user at a time. The computer boundary is the explicitly-mounted `workspace/` directory.
+The bot calls the OpenAI Responses API directly and gives the model hosted web search plus constrained local tools for listing, reading, editing, testing, and inspecting Git. The model uses web search for current or externally verifiable facts and can include source citations. File writes and Git commit/push actions pause for explicit approval; approve or reject them with `/approve <id>` or `/reject <id>`. `/new` starts a fresh conversation in the default workspace; `/stop` forgets the session. The original one-shot `/run` worker form remains supported. Sessions are kept in memory and are lost when the bot restarts; only one task runs per user at a time. The computer boundary is the explicitly-mounted `workspace/` directory.
 
 Stop it with `docker compose down`. Mounting `/var/run/docker.sock` gives the bot permission to start containers through the host Docker daemon; keep the bot deployment on a trusted machine.
 

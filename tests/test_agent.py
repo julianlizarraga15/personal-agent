@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
-from agent import Computer, ProjectContext, tool_definitions
+from agent import Agent, AgentSession, Computer, ProjectContext, tool_definitions
 
 
 class ComputerToolTests(unittest.TestCase):
@@ -48,3 +49,27 @@ class ComputerToolTests(unittest.TestCase):
             names,
             {"list_files", "read_file", "write_file", "run_command", "git_status", "git_diff", "git_commit", "git_push"},
         )
+
+    def test_web_search_is_available_as_a_hosted_tool(self) -> None:
+        from agent import WEB_SEARCH_TOOL
+
+        self.assertEqual(WEB_SEARCH_TOOL, {"type": "web_search"})
+
+    def test_agent_passes_web_search_to_responses_api(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(output=[], output_text="ok")
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.responses = FakeResponses()
+
+        client = FakeClient()
+        result = Agent(client=client).respond(AgentSession(), "qué tiempo hace hoy en CABA?")
+
+        self.assertEqual(result, "ok")
+        self.assertIn({"type": "web_search"}, client.responses.kwargs["tools"])
