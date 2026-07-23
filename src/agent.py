@@ -169,4 +169,18 @@ class Agent:
 
 
 def _output_items(response: Any) -> list[dict[str, Any]]:
-    return [item.model_dump() if hasattr(item, "model_dump") else item for item in response.output]
+    """Convert response output into input items accepted by the next request.
+
+    The Responses API returns some output-only metadata (notably ``status`` on
+    hosted tool calls).  Those fields are not valid when the output item is
+    supplied back as conversation input, so strip them at the top level while
+    preserving the rest of the item.
+    """
+    items: list[dict[str, Any]] = []
+    for item in response.output:
+        dumped = item.model_dump() if hasattr(item, "model_dump") else item
+        if isinstance(dumped, dict):
+            dumped = dict(dumped)
+            dumped.pop("status", None)
+        items.append(dumped)
+    return items

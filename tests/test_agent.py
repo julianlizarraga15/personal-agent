@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 
-from agent import Agent, AgentSession, Computer, ProjectContext, tool_definitions
+from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, tool_definitions
 
 
 class ComputerToolTests(unittest.TestCase):
@@ -79,3 +79,12 @@ class ComputerToolTests(unittest.TestCase):
 
         self.assertEqual(result, "ok")
         self.assertIn({"type": "web_search"}, client.responses.kwargs["tools"])
+
+    def test_output_items_remove_response_only_status_metadata(self) -> None:
+        class FakeOutputItem:
+            def model_dump(self):
+                return {"type": "web_search_call", "status": "completed", "id": "call_1"}
+
+        output = _output_items(SimpleNamespace(output=[FakeOutputItem()]))
+
+        self.assertEqual(output, [{"type": "web_search_call", "id": "call_1"}])
