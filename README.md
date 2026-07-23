@@ -60,6 +60,8 @@ Now add tests for that validation
 
 The bot calls the OpenAI Responses API directly and gives the model hosted web search plus constrained local tools for listing, reading, editing, testing, and inspecting Git. The model uses web search for current or externally verifiable facts and can include source citations. File writes and Git commit/push actions pause for explicit approval; approve or reject them with `/approve <id>` or `/reject <id>`. `/new` starts a fresh conversation in the default workspace; `/stop` forgets the session. The original one-shot `/run` worker form remains supported. Sessions are kept in memory and are lost when the bot restarts; only one task runs per user at a time. The computer boundary is the explicitly-mounted `workspace/` directory.
 
+The conversational path first uses a small conservative router for clearly simple messages. Coding, tool, web-search, contextual, or uncertain requests use the configured large model. Set `OPENAI_ROUTER_ENABLED=0` to disable routing, or configure `OPENAI_ROUTER_MODEL` and `OPENAI_MODEL` in the environment.
+
 Stop it with `docker compose down`. Mounting `/var/run/docker.sock` gives the bot permission to start containers through the host Docker daemon; keep the bot deployment on a trusted machine.
 
 The reusable worker API is available as `worker.execute_workflow(task, repo, on_status=...)`; the module CLI remains available inside the worker image.

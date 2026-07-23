@@ -8,6 +8,7 @@ This project runs an agent that can modify and push code, so deployment security
 - The worker publishes to the checked-out default branch (`main` or `master`) after the task and tests complete.
 - The Telegram bot accepts commands only from the numeric `TELEGRAM_ALLOWED_USER_ID`.
 - The model receives only explicitly-defined tools, and file paths are constrained to the mounted workspace.
+- The small routing model receives no tools or file contents. It is conservative and falls back to the large agent for ambiguity or routing failures; its decision never grants additional permissions.
 - The hosted web-search tool is the only external-information capability; web results are untrusted input and do not grant the model access to local secrets or arbitrary local network actions.
 - File writes and dedicated Git commit/push operations require explicit Telegram approval with a short-lived request ID.
 - Destructive shell commands and shell-form Git publication remain blocked; Git publication uses the dedicated approval flow.

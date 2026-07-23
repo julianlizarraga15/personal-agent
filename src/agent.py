@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from router import Router
+
 
 SYSTEM_PROMPT = """You are a personal computer agent speaking naturally with your owner.
 You can answer questions directly. For current, time-sensitive, or externally
@@ -126,16 +128,32 @@ class Computer:
 
 
 class Agent:
-    def __init__(self, client: Any | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        client: Any | None = None,
+        model: str | None = None,
+        router: Router | None = None,
+        router_enabled: bool | None = None,
+    ) -> None:
         if client is None:
             from openai import OpenAI
 
             client = OpenAI()
         self.client = client
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5.6")
+        if router_enabled is None:
+            router_enabled = os.environ.get("OPENAI_ROUTER_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+        self.router = router if router_enabled else None
+        if self.router is None and router_enabled:
+            self.router = Router(self.client, os.environ.get("OPENAI_ROUTER_MODEL", "gpt-5-mini"))
 
     def respond(self, session: AgentSession, message: str, approval_callback: ApprovalCallback | None = None) -> str:
         session.input_items.append({"role": "user", "content": message})
+        if self.router is not None:
+            decision = self.router.decide(message, _routing_context(session))
+            if decision.route == "small":
+                session.input_items.append({"role": "assistant", "content": decision.answer})
+                return decision.answer
         if session.project is None:
             response = self.client.responses.create(
                 model=self.model,
@@ -166,6 +184,18 @@ class Agent:
                     result = f"tool error: {exc}"
                 session.input_items.append({"type": "function_call_output", "call_id": call.call_id, "output": result})
         return "I reached the tool-call limit for this turn."
+
+
+def _routing_context(session: AgentSession) -> dict[str, Any]:
+    """Provide limited context to the router without exposing project files."""
+    recent = []
+    for item in session.input_items[-6:]:
+        if item.get("role") in {"user", "assistant"} and isinstance(item.get("content"), str):
+            recent.append({"role": item["role"], "content": item["content"][-1200:]})
+    return {
+        "project_selected": session.project is not None,
+        "recent_conversation": recent,
+    }
 
 
 def _output_items(response: Any) -> list[dict[str, Any]]:

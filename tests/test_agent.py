@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, tool_definitions
+from router import RouteDecision, Router
 
 
 class ComputerToolTests(unittest.TestCase):
@@ -88,3 +89,61 @@ class ComputerToolTests(unittest.TestCase):
         output = _output_items(SimpleNamespace(output=[FakeOutputItem()]))
 
         self.assertEqual(output, [{"type": "web_search_call", "id": "call_1"}])
+
+
+class RouterTests(unittest.TestCase):
+    class FakeResponses:
+        def __init__(self, output_text: str) -> None:
+            self.output_text = output_text
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(output_text=self.output_text)
+
+    class FakeClient:
+        def __init__(self, output_text: str) -> None:
+            self.responses = RouterTests.FakeResponses(output_text)
+
+    def test_accepts_confident_small_answer(self) -> None:
+        router = Router(self.FakeClient('{"route":"small","answer":"Hello!","confidence":0.98}'), "small")
+        decision = router.decide("hello", {"project_selected": False})
+        self.assertEqual(decision, RouteDecision("small", "Hello!", 0.98))
+
+    def test_low_confidence_small_route_falls_back_to_large(self) -> None:
+        router = Router(self.FakeClient('{"route":"small","answer":"Maybe","confidence":0.6}'), "small")
+        self.assertEqual(router.decide("do that", {}).route, "large")
+
+    def test_invalid_router_output_falls_back_to_large(self) -> None:
+        router = Router(self.FakeClient("not json"), "small")
+        self.assertEqual(router.decide("anything", {}).route, "large")
+
+    def test_agent_returns_small_answer_without_calling_large_model(self) -> None:
+        class UnusedClient:
+            class Responses:
+                def create(self, **kwargs):
+                    raise AssertionError("large model should not be called")
+
+            responses = Responses()
+
+        class SmallRouter:
+            def decide(self, message, context):
+                return RouteDecision("small", "A cheap answer", 0.99)
+
+        result = Agent(client=UnusedClient(), router=SmallRouter()).respond(AgentSession(), "hello")
+        self.assertEqual(result, "A cheap answer")
+
+    def test_agent_sends_large_route_to_existing_model(self) -> None:
+        class FakeResponses:
+            def create(self, **kwargs):
+                return SimpleNamespace(output=[], output_text="large answer")
+
+        class FakeClient:
+            responses = FakeResponses()
+
+        class LargeRouter:
+            def decide(self, message, context):
+                return RouteDecision("large", confidence=0.7)
+
+        result = Agent(client=FakeClient(), router=LargeRouter()).respond(AgentSession(), "edit the file")
+        self.assertEqual(result, "large answer")
