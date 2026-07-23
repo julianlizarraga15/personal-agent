@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repository-worker"
+version = "0.1.0"
+description = "Minimal Dockerized worker for inspecting a Git repository"
+requires-python = ">=3.11"
+dependencies = ["openai>=1.0", "python-telegram-bot>=21,<22"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["worker", "telegram_bot"]

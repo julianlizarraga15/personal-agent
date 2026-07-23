@@ -1,0 +1,13 @@
+# Registry of repositories that the agent may be asked to work on.
+# Keep credentials out of this file; use Git's configured credential helper or
+# the runtime's secret mechanism. An empty registry is a safe default.
+version: 1
+projects: []
+
+# Example entry:
+# projects:
+#   - name: example-service
+#     repository: https://github.com/example/example-service.git
+#     default_branch: main
+#     enabled: true
+#     notes: "Runs the repository's declared test command"
