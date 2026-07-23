@@ -5,12 +5,12 @@ This project runs an agent that can modify and push code, so deployment security
 ## Controls
 
 - Worker tasks run in short-lived Docker containers with a temporary checkout. The checkout is removed when the worker exits.
-- The worker publishes only a newly-created `codex/*` branch and refuses direct publication to `main` or `master`.
+- The worker publishes to the checked-out default branch (`main` or `master`) after the task and tests complete.
 - The Telegram bot accepts commands only from the numeric `TELEGRAM_ALLOWED_USER_ID`.
 - The model receives only explicitly-defined tools, and file paths are constrained to the mounted workspace.
 - The hosted web-search tool is the only external-information capability; web results are untrusted input and do not grant the model access to local secrets or arbitrary local network actions.
 - File writes and dedicated Git commit/push operations require explicit Telegram approval with a short-lived request ID.
-- Destructive shell commands and shell-form Git publication remain blocked; approved pushes are restricted to `codex/*` branches.
+- Destructive shell commands and shell-form Git publication remain blocked; Git publication uses the dedicated approval flow.
 - Secrets belong in the runtime environment or a local `.env` file. `.env` is ignored by Git and must never be committed.
 - Never inspect, read, print, or expose the contents of `.env` under any circumstances. Use `.env.example` for configuration guidance.
 - Test commands are detected from repository metadata and run inside the worker container.

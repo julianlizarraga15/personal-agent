@@ -133,17 +133,15 @@ def branch_name(task: str) -> str:
 
 
 def publish_changes(repository: Path, task: str) -> tuple[str, str]:
-    """Create a non-main branch, commit changes, and push it to origin."""
+    """Commit changes on the checked-out branch and push it to origin."""
 
     current = run_command(["git", "branch", "--show-current"], repository, description="Checking current branch").stdout.strip()
-    name = branch_name(task)
-    if name in {"main", "master"} or current == name:
-        raise WorkerError("refusing to publish directly to the main branch")
-    run_command(["git", "switch", "-c", name], repository, description=f"Creating branch {name}")
+    if not current:
+        raise WorkerError("could not determine the checked-out branch")
     run_command(["git", "add", "--all"], repository, description="Staging changes")
     run_command(["git", "commit", "-m", f"Codex: {task}"], repository, description="Committing changes")
-    run_command(["git", "push", "--set-upstream", "origin", name], repository, description=f"Pushing branch {name}")
-    return name, run_command(["git", "rev-parse", "HEAD"], repository, description="Reading commit").stdout.strip()
+    run_command(["git", "push", "--set-upstream", "origin", current], repository, description=f"Pushing branch {current}")
+    return current, run_command(["git", "rev-parse", "HEAD"], repository, description="Reading commit").stdout.strip()
 
 
 StatusCallback = Callable[[str], None]

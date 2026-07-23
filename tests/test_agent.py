@@ -29,7 +29,7 @@ class ComputerToolTests(unittest.TestCase):
             )
             self.assertIn("blocked", result)
 
-    def test_git_actions_require_approval_and_push_branch_is_restricted(self) -> None:
+    def test_git_actions_require_approval_and_push_current_branch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             computer = Computer(ProjectContext("demo", Path(directory)))
             requested: list[tuple[str, str]] = []
@@ -41,7 +41,13 @@ class ComputerToolTests(unittest.TestCase):
             self.assertIn("not created", result)
             self.assertEqual(requested[0][0], "git_commit")
             self.assertIn("save changes", requested[0][1])
-            self.assertIn("allowed only for codex/*", computer.call("git_push", {"branch": "main"}))
+            result = computer.call(
+                "git_push",
+                {"branch": "main"},
+                lambda action, summary: requested.append((action, summary)) or False,
+            )
+            self.assertIn("not pushed", result)
+            self.assertEqual(requested[-1][0], "git_push")
 
     def test_tool_schemas_are_function_tools(self) -> None:
         names = {tool["name"] for tool in tool_definitions()}

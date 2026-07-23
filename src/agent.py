@@ -51,7 +51,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {"type": "function", "name": "git_status", "description": "Show the current Git status.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
         {"type": "function", "name": "git_diff", "description": "Show the current Git diff.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
         {"type": "function", "name": "git_commit", "description": "Stage all current changes and create a Git commit after user approval.", "parameters": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"], "additionalProperties": False}},
-        {"type": "function", "name": "git_push", "description": "Push the current codex/* branch after user approval.", "parameters": {"type": "object", "properties": {"remote": {"type": "string", "description": "Git remote, default origin."}, "branch": {"type": "string", "description": "Branch to push; must start with codex/."}}, "additionalProperties": False}},
+        {"type": "function", "name": "git_push", "description": "Push the current branch after user approval.", "parameters": {"type": "object", "properties": {"remote": {"type": "string", "description": "Git remote, default origin."}, "branch": {"type": "string", "description": "Branch to push, defaulting to the current branch."}}, "additionalProperties": False}},
     ]
 
 
@@ -109,8 +109,6 @@ class Computer:
                 if branch_result.returncode:
                     return json.dumps({"exit_code": branch_result.returncode, "output": branch_result.stdout, "error": branch_result.stderr})
                 branch = branch_result.stdout.strip()
-            if not branch.startswith("codex/"):
-                return "blocked: git push is allowed only for codex/* branches"
             if not self._approve(approval_callback, "git_push", f"push {remote}/{branch}"):
                 return "approval denied or expired; branch was not pushed"
             return self._git(["push", remote, branch])
