@@ -19,6 +19,7 @@
 - A successful legacy worker reports a `codex/*` branch, commit, and test status.
 - The conversational agent requires `OPENAI_API_KEY` and operates only inside the mounted `workspace/` directory.
 - The bot keeps the selected project and recent conversation in memory; restart the bot or use `/new` to clear it.
+- Self-deployment requires the repository at `workspace/personal-agent`. Set `HOST_WORKSPACE_DIR` to its absolute host path before starting Compose so the helper can recreate the service with the correct bind mount.
 
 ## Common failures
 
@@ -32,6 +33,10 @@
 ## Stop and recover
 
 Stop services with `docker compose down`. Failed tasks should not publish a branch; inspect logs before retrying. For a partially-created remote branch, review it first, then delete it through the Git host only after confirming it is safe to remove.
+
+## Self-deployment recovery
+
+When the agent is asked to modify itself, it tests the checkout and asks for approval before each commit, push, and restart stage. The helper tags the existing bot image as `personal-agent-bot:rollback-<UTC timestamp>` before rebuilding. If the replacement does not start, retag the most recent rollback image as `personal-agent-bot:latest`, then run `docker compose up -d bot`.
 
 ## Maintenance checklist
 

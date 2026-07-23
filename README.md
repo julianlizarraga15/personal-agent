@@ -62,6 +62,8 @@ The bot calls the OpenAI Responses API directly and gives the model hosted web s
 
 The conversational path first uses a small conservative router for clearly simple messages. Coding, tool, web-search, contextual, or uncertain requests use the configured large model. Set `OPENAI_ROUTER_ENABLED=0` to disable routing, or configure `OPENAI_ROUTER_MODEL` and `OPENAI_MODEL` in the environment.
 
+To let the agent update this bot, keep a checkout at `workspace/personal-agent` and tell it to modify and deploy itself. It runs tests, then requests separate approvals to commit, push the current branch, and rebuild/recreate the bot service. Set `HOST_WORKSPACE_DIR` to the absolute host path for `workspace/` when using this flow; the deployment helper retains the previous bot image under a rollback tag. A bot restart loses in-memory conversations and pending approvals.
+
 Stop it with `docker compose down`. Mounting `/var/run/docker.sock` gives the bot permission to start containers through the host Docker daemon; keep the bot deployment on a trusted machine.
 
 The reusable worker API is available as `worker.execute_workflow(task, repo, on_status=...)`; the module CLI remains available inside the worker image.

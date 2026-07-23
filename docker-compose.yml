@@ -3,21 +3,36 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: repository-worker:latest
+    image: ${WORKER_IMAGE:-repository-worker:latest}
     entrypoint: ["/bin/true"]
 
   bot:
     build:
       context: .
       dockerfile: Dockerfile.bot
+    image: ${BOT_IMAGE:-personal-agent-bot:latest}
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
       WORKER_IMAGE: repository-worker:latest
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       AGENT_WORKSPACE_ROOT: /workspace
+      SELF_REPOSITORY_PATH: /workspace/personal-agent
+      SELF_DEPLOY_HELPER: /usr/local/bin/restart-personal-agent
+      DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
+      DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
+      BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
+      HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
+      GIT_SSH_COMMAND: >-
+        ssh -i /run/secrets/github_key
+        -o IdentitiesOnly=yes
+        -o UserKnownHostsFile=/run/secrets/github_known_hosts
+        -o StrictHostKeyChecking=yes
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./workspace:/workspace
+      - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
+      - ./deploy/restart-personal-agent.sh:/usr/local/bin/restart-personal-agent:ro
+      - ${GIT_SSH_KEY_PATH:-./secrets/personal-agent-github}:/run/secrets/github_key:ro
+      - ${GIT_KNOWN_HOSTS_PATH:-./secrets/known_hosts}:/run/secrets/github_known_hosts:ro
     depends_on:
       - worker

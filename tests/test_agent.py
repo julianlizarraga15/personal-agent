@@ -57,6 +57,18 @@ class ComputerToolTests(unittest.TestCase):
             {"list_files", "read_file", "write_file", "run_command", "git_status", "git_diff", "git_commit", "git_push"},
         )
 
+    def test_self_deploy_tool_is_opt_in(self) -> None:
+        self.assertNotIn("self_deploy", {tool["name"] for tool in tool_definitions()})
+        self.assertIn("self_deploy", {tool["name"] for tool in tool_definitions(True)})
+
+    def test_self_deploy_callback_is_available_only_as_a_tool_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            calls: list[str] = []
+            computer = Computer(ProjectContext("self", Path(directory)))
+            result = computer.call("self_deploy", {}, deploy_callback=lambda: calls.append("deployed") or "ok")
+            self.assertEqual(result, "ok")
+            self.assertEqual(calls, ["deployed"])
+
     def test_web_search_is_available_as_a_hosted_tool(self) -> None:
         from agent import WEB_SEARCH_TOOL
 

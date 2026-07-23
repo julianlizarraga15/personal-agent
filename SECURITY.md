@@ -19,6 +19,7 @@ This project runs an agent that can modify and push code, so deployment security
 ## Deployment requirements
 
 - Run the bot only on a trusted host. Mounting `/var/run/docker.sock` effectively gives the bot control of the host Docker daemon.
+- The self-deployment helper accepts no arguments, allows only the configured Compose file and `personal-agent-bot:*` image family, and is mounted read-only. It still has Docker-socket authority and must be treated as a host-control boundary.
 - Use a dedicated Git identity/token with the minimum repository permissions needed to create branches and push them.
 - Do not mount the host filesystem, SSH agent, cloud credentials, or personal home directory into the bot or worker containers. The only intended host mount is the dedicated project `workspace/` directory.
 - Pin or regularly review base images and Python dependencies before production use.
