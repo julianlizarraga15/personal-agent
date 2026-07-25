@@ -36,7 +36,7 @@ Stop services with `docker compose down`. Failed tasks should not publish a bran
 
 ## Self-deployment recovery
 
-When the agent is asked to modify itself, it tests the checkout and asks for approval before each commit, push, and restart stage. The helper tags the existing bot image as `personal-agent-bot:rollback-<UTC timestamp>` before rebuilding. If the replacement does not start, retag the most recent rollback image as `personal-agent-bot:latest`, then run `docker compose up -d bot`.
+When the agent is asked to modify itself, it requests one approval for the complete operation, then tests the checkout, commits and pushes the current branch, and asks the helper to rebuild and recreate the bot service. The helper tags the existing bot image as `personal-agent-bot:rollback-<UTC timestamp>` before rebuilding. If the replacement does not start, retag the most recent rollback image as `personal-agent-bot:latest`, then run `docker compose up -d bot`.
 
 ## Maintenance checklist
 
