@@ -5,6 +5,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN git config --system --add safe.directory /workspace/personal-agent
 COPY pyproject.toml README.md ./
 COPY src ./src
 
