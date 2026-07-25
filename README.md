@@ -4,6 +4,8 @@ Minimal Dockerized Python worker controlled either from the command line or thro
 
 The repository operating contract is documented in [`AGENTS.md`](AGENTS.md). See [`SECURITY.md`](SECURITY.md) before deploying the Telegram bot, [`RUNBOOK.md`](RUNBOOK.md) for operations, and [`docs/adr/`](docs/adr/) for the architectural decisions behind the isolation and repository boundaries.
 
+Unless noted otherwise, commands in this guide are intended to be run from the repository root.
+
 ## Local usage
 
 Requires Python 3.11+, Git, and a non-interactive `codex` CLI available on `PATH`. Set `CODEX_BIN` when the executable has a different name.
