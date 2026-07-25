@@ -179,6 +179,16 @@ class Agent:
             session.input_items.extend(_output_items(response))
             return text
 
+        tool_approval = approval_callback
+        if _is_self_repository(session.project) and _requests_self_deploy(message):
+            if approval_callback is None or not approval_callback(
+                "self_deploy",
+                "Allow this self-deployment to edit the self-repository, run tests, commit, push, rebuild, and restart the bot.",
+            ):
+                return "self-deployment was not approved; no changes were made"
+            # One explicit approval covers the complete, user-requested deployment turn.
+            tool_approval = lambda _action, _summary: True
+
         computer = Computer(session.project)
         self_repository = _is_self_repository(session.project)
         for _ in range(12):
@@ -197,8 +207,8 @@ class Agent:
                     result = computer.call(
                         call.name,
                         json.loads(call.arguments),
-                        approval_callback,
-                        lambda: self_deploy(session.project, approval_callback),
+                        tool_approval,
+                        lambda: self_deploy(session.project, tool_approval),
                     )
                 except Exception as exc:  # tool failures belong in the conversation
                     result = f"tool error: {exc}"
@@ -209,6 +219,14 @@ class Agent:
 def _is_self_repository(project: ProjectContext) -> bool:
     configured = Path(os.environ.get("SELF_REPOSITORY_PATH", "/workspace/personal-agent")).resolve()
     return project.path.resolve() == configured
+
+
+def _requests_self_deploy(message: str) -> bool:
+    normalized = message.lower().replace("-", " ")
+    return any(
+        phrase in normalized
+        for phrase in ("self deploy", "deploy itself", "modify itself", "update itself")
+    )
 
 
 def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | None) -> str:

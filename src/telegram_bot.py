@@ -106,10 +106,10 @@ class ConversationSession:
                 if self.pending_approval is request:
                     self.pending_approval = None
 
-    def resolve_approval(self, request_id: str, approved: bool) -> bool:
+    def resolve_approval(self, request_id: str | None, approved: bool) -> bool:
         with self.approval_lock:
             request = self.pending_approval
-            if request is None or request.request_id != request_id:
+            if request is None or (request_id is not None and request.request_id != request_id):
                 return False
             request.resolve(approved)
             return True
@@ -303,11 +303,12 @@ async def _resolve_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     message = update.effective_message
     if user is None or message is None or not _is_allowed(user.id):
         return
-    if len(context.args) != 1:
-        await message.reply_text(f"Usage: /{'approve' if approved else 'reject'} <approval-id>")
+    if len(context.args) > 1:
+        await message.reply_text(f"Usage: /{'approve' if approved else 'reject'} [approval-id]")
         return
     session = SESSIONS.get(user.id)
-    resolved = session is not None and session.resolve_approval(context.args[0], approved)
+    request_id = context.args[0] if context.args else None
+    resolved = session is not None and session.resolve_approval(request_id, approved)
     if not resolved:
         await message.reply_text("That approval ID is unknown or expired.")
         return
