@@ -395,6 +395,7 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
     if session.running:
         await message.reply_text("I’m still working on the previous request.")  # type: ignore[attr-defined]
         return
+    await message.reply_text("Working...")  # type: ignore[attr-defined]
     session.running = True
     loop = asyncio.get_running_loop()
 
