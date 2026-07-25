@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-07-23
+Last updated: 2026-07-25
 
 ## Current state
 
@@ -11,13 +11,19 @@ Last updated: 2026-07-23
 - The conversational agent now has the OpenAI Responses API hosted `web_search` tool for current external information and source citations.
 - A conservative configurable small-model router now answers high-confidence simple messages directly and falls back to the large model for coding, tools, web search, ambiguity, or routing failures.
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
-- The initial project files are committed on `codex/initial-project` (`50e7782`) and the branch tracks `origin/codex/initial-project`.
+- The current outer checkout is on `main`, one commit ahead of `origin/main` (`30914bb`, commit subject `l`).
+- An older, clean `codex/initial-project` checkout also exists under `workspace/personal-agent`; it was left untouched.
 - The live Telegram/Docker deployment has not been verified because no Docker daemon is available in this environment.
 
 ## What we are building
 
 - A Telegram front end and Dockerized worker for a personal computer agent running on a VM.
 - The desired product is a friend-like agent: normal chat by default, with local file and command execution when requested.
+
+## Last stopping point
+
+- The latest completed work added a conservative small-model router and documented the current Responses API/computer-tool architecture.
+- The working tree is clean apart from the pre-existing untracked nested checkout `workspace/personal-agent/`.
 
 ## Next steps
 
@@ -37,7 +43,7 @@ Last updated: 2026-07-23
 
 ## Validation
 
-- Current validation: `PYTHONPATH=src python3 -m unittest discover -s tests` passes (24 tests); Python compilation and `git diff --check` pass.
+- Current validation: `PYTHONPATH=src python3 -m unittest discover -s tests` passes (24 tests); Python compilation, `docker compose config`, and `git diff --check` pass.
 - The required literal `python -m pytest` validation is unavailable because `python` is not installed in the environment.
 - `python3 -m pytest` is also unavailable because pytest is not installed.
 - Python compilation and `docker compose config` pass with placeholder validation environment values.
