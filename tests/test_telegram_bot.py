@@ -67,6 +67,21 @@ class TelegramWorkerTests(unittest.TestCase):
         self.assertEqual(result, [True])
         self.assertIsNone(session.pending_approval)
 
+    def test_pending_approval_can_resolve_without_id(self) -> None:
+        session = ConversationSession()
+        notified = threading.Event()
+        result: list[bool] = []
+
+        def wait_for_approval() -> None:
+            result.append(session.request_approval("write_file", "write notes.txt", lambda request: notified.set()))
+
+        thread = threading.Thread(target=wait_for_approval)
+        thread.start()
+        self.assertTrue(notified.wait(timeout=1))
+        self.assertTrue(session.resolve_approval(None, True))
+        thread.join(timeout=1)
+        self.assertEqual(result, [True])
+
     def test_conversation_session_keeps_project_and_context(self) -> None:
         session = ConversationSession(project="https://example.test/repo.git")
         first_prompt = session.prompt_for("Add a health endpoint")

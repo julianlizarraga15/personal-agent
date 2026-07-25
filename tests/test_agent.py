@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 
-from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, tool_definitions
+from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, _requests_self_deploy, tool_definitions
 from router import RouteDecision, Router
 
 
@@ -60,6 +60,11 @@ class ComputerToolTests(unittest.TestCase):
     def test_self_deploy_tool_is_opt_in(self) -> None:
         self.assertNotIn("self_deploy", {tool["name"] for tool in tool_definitions()})
         self.assertIn("self_deploy", {tool["name"] for tool in tool_definitions(True)})
+
+    def test_self_deploy_request_detection_is_explicit(self) -> None:
+        self.assertTrue(_requests_self_deploy("modify itself and deploy itself"))
+        self.assertTrue(_requests_self_deploy("prepare a self-deployment"))
+        self.assertFalse(_requests_self_deploy("update the README and run tests"))
 
     def test_self_deploy_callback_is_available_only_as_a_tool_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

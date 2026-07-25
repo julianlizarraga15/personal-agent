@@ -62,7 +62,7 @@ def tool_definitions(include_self_deploy: bool = False) -> list[dict[str, Any]]:
     if include_self_deploy:
         tools.append({
             "type": "function", "name": "self_deploy",
-            "description": "Run tests, then request approval to commit, push the current self-repository branch, rebuild the bot image, and restart the bot.",
+            "description": "Run tests, then request approval to commit and push the self-repository main branch, rebuild the bot image, and restart the bot.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         })
     return tools
@@ -187,6 +187,7 @@ class Agent:
                 "Allow this self-deployment to edit the self-repository, run tests, commit, push, rebuild, and restart the bot.",
             ):
                 return "self-deployment was not approved; no changes were made"
+            # One explicit approval covers the complete, user-requested deployment turn.
             tool_approval = lambda _action, _summary: True
 
         computer = Computer(session.project)
@@ -258,11 +259,11 @@ def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | N
         return json.dumps({"stage": "commit", "exit_code": commit.returncode, "output": (commit.stdout + commit.stderr)[-6000:]})
     branch_result = subprocess.run(["git", "branch", "--show-current"], cwd=project.path, capture_output=True, text=True, timeout=30)
     branch = branch_result.stdout.strip()
-    if branch_result.returncode or not branch:
-        return json.dumps({"stage": "branch", "exit_code": branch_result.returncode, "error": branch_result.stderr})
-    if not approval_callback("self_deploy_push", f"push self-update commit to origin/{branch}"):
+    if branch_result.returncode or branch != "main":
+        return json.dumps({"stage": "branch", "exit_code": branch_result.returncode, "branch": branch, "error": "self-deployment requires the self-repository to be checked out on main"})
+    if not approval_callback("self_deploy_push", "push self-update commit to origin/main"):
         return "deployment stopped; push was not approved"
-    pushed = subprocess.run(["git", "push", "origin", branch], cwd=project.path, capture_output=True, text=True, timeout=120)
+    pushed = subprocess.run(["git", "push", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
     if pushed.returncode:
         return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": (pushed.stdout + pushed.stderr)[-8000:]})
     if not approval_callback("self_deploy_restart", "rebuild the bot image and recreate the Docker Compose bot service"):
