@@ -356,7 +356,7 @@ async def _run_task(message: object, session: ConversationSession, task: str, us
         return
     assert session.project is not None
     image = os.environ.get("WORKER_IMAGE", "repository-worker:latest")
-    await message.reply_text("Task received.")
+    await message.reply_text("Working...")
     loop = asyncio.get_running_loop()
     statuses: asyncio.Queue[str] = asyncio.Queue()
 

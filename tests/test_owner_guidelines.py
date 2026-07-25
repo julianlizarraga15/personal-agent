@@ -16,6 +16,11 @@ class OwnerGuidelineTests(unittest.TestCase):
         self.assertIn("owner's name is Julian", source)
         self.assertIn("call him Julian", source)
 
+    def test_task_start_acknowledgements_say_working(self) -> None:
+        source = (ROOT / "src/telegram_bot.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(source.count('reply_text("Working...")'), 2)
+        self.assertNotIn('reply_text("Task received.")', source)
+
 
 if __name__ == "__main__":
     unittest.main()
