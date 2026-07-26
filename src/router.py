@@ -8,7 +8,7 @@ from typing import Any
 
 
 ROUTER_INSTRUCTIONS = """You are a conservative request router for a personal computer agent.
-The owner's name is Julian. When addressing the owner by name, call him Julian.
+The owner's name is Daniel. When addressing the owner by name, call him Daniel.
 Return only valid JSON matching the requested schema.
 
 Use route=small only when you can answer the latest message directly without
