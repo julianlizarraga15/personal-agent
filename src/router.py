@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 ROUTER_INSTRUCTIONS = """You are a conservative request router for a personal computer agent.
@@ -51,6 +56,8 @@ class Router:
         self.model = model
 
     def decide(self, message: str, context: dict[str, Any]) -> RouteDecision:
+        started = time.monotonic()
+        LOGGER.info("router started model=%s", self.model)
         payload = {
             "latest_message": message,
             "context": context,
@@ -78,7 +85,10 @@ class Router:
             if not 0 <= confidence <= 1:
                 raise ValueError("invalid route confidence")
             if route == "small" and (confidence < 0.9 or not answer.strip()):
+                LOGGER.info("router finished route=large confidence=%.2f elapsed_seconds=%.1f", confidence, time.monotonic() - started)
                 return RouteDecision("large", confidence=confidence)
+            LOGGER.info("router finished route=%s confidence=%.2f elapsed_seconds=%.1f", route, confidence, time.monotonic() - started)
             return RouteDecision(route, answer=answer, confidence=confidence)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("router failed error_type=%s elapsed_seconds=%.1f; falling_back=large", type(exc).__name__, time.monotonic() - started)
             return RouteDecision("large")

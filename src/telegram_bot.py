@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
 from agent import Agent, AgentSession, ProjectContext
+
+
+LOGGER = logging.getLogger(__name__)
 
 STATUS_MESSAGES = {
     "cloning repository": "Cloning repository…",
@@ -96,11 +101,21 @@ class ConversationSession:
         request = PendingApproval(uuid.uuid4().hex[:8], action, summary[:500])
         with self.approval_lock:
             if self.pending_approval is not None:
+                LOGGER.warning("approval rejected action=%s reason=another_request_pending", action)
                 return False
             self.pending_approval = request
         try:
+            LOGGER.info("approval waiting request_id=%s action=%s timeout_seconds=300", request.request_id, action)
             notify(request)
-            return request.event.wait(timeout=300) and request.approved is True
+            resolved = request.event.wait(timeout=300)
+            approved = resolved and request.approved is True
+            LOGGER.info(
+                "approval finished request_id=%s action=%s outcome=%s",
+                request.request_id,
+                action,
+                "approved" if approved else ("rejected" if resolved else "expired"),
+            )
+            return approved
         finally:
             with self.approval_lock:
                 if self.pending_approval is request:
@@ -112,11 +127,13 @@ class ConversationSession:
             if request is None or (request_id is not None and request.request_id != request_id):
                 return False
             request.resolve(approved)
+            LOGGER.info("approval resolved request_id=%s outcome=%s", request.request_id, "approved" if approved else "rejected")
             return True
 
     def cancel_approval(self) -> None:
         with self.approval_lock:
             if self.pending_approval is not None:
+                LOGGER.info("approval cancelled request_id=%s", self.pending_approval.request_id)
                 self.pending_approval.resolve(False)
 
 
@@ -159,6 +176,8 @@ def run_docker_worker(
     command = [docker_bin, "run", "--rm", image, "--task", task, "--repo", project]
     if base_branch:
         command.extend(["--base-branch", base_branch])
+    started = time.monotonic()
+    LOGGER.info("legacy_worker started image=%s project=%s base_branch=%s", image, project, base_branch or "none")
     try:
         process = subprocess.Popen(
             command,
@@ -168,6 +187,7 @@ def run_docker_worker(
             bufsize=1,
         )
     except OSError as exc:
+        LOGGER.exception("legacy_worker failed_to_start project=%s", project)
         raise WorkerExecutionError(f"Could not start Docker worker: {exc}") from exc
 
     stdout_lines: list[str] = []
@@ -176,12 +196,15 @@ def run_docker_worker(
         line = raw_line.rstrip()
         stdout_lines.append(line)
         if line.startswith("STATUS: ") and on_status is not None:
-            on_status(line.removeprefix("STATUS: "))
+            status = line.removeprefix("STATUS: ")
+            LOGGER.info("legacy_worker status=%s", status)
+            on_status(status)
 
     stderr = process.stderr.read() if process.stderr is not None else ""
     return_code = process.wait()
     result_line = next((line for line in stdout_lines if line.startswith("RESULT: ")), None)
     if return_code or result_line is None:
+        LOGGER.error("legacy_worker failed project=%s exit_code=%s elapsed_seconds=%.1f", project, return_code, time.monotonic() - started)
         logs = "\n".join(part for part in ("\n".join(stdout_lines), stderr.strip()) if part)
         raise WorkerExecutionError(
             f"Docker worker failed (exit {return_code}).\n{logs or 'No logs were produced.'}"
@@ -189,6 +212,7 @@ def run_docker_worker(
 
     try:
         payload = json.loads(result_line.removeprefix("RESULT: "))
+        LOGGER.info("legacy_worker finished project=%s exit_code=0 elapsed_seconds=%.1f", project, time.monotonic() - started)
         return WorkerSummary(True, payload["branch"], payload["commit"], payload["tests"], payload["elapsed_seconds"])
     except (KeyError, TypeError, ValueError) as exc:
         raise WorkerExecutionError(f"Docker worker returned an invalid result: {result_line}") from exc
@@ -395,11 +419,15 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
     if session.running:
         await message.reply_text("I’m still working on the previous request.")  # type: ignore[attr-defined]
         return
+    turn_id = uuid.uuid4().hex[:8]
+    started = time.monotonic()
+    LOGGER.info("turn started turn_id=%s user_id=%s project=%s", turn_id, user_id, session.project or "computer")
     await message.reply_text("Working...")  # type: ignore[attr-defined]
     session.running = True
     loop = asyncio.get_running_loop()
 
     def notify(request: PendingApproval) -> None:
+        LOGGER.info("turn approval_prompt turn_id=%s request_id=%s action=%s", turn_id, request.request_id, request.action)
         prompt = (
             f"Approval required ({request.request_id})\n"
             f"action: {request.action}\n"
@@ -412,10 +440,12 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
         return session.request_approval(action, summary, notify)
 
     try:
-        response = await asyncio.to_thread(Agent().respond, session.agent, task, request_approval)
+        response = await asyncio.to_thread(Agent().respond, session.agent, task, request_approval, turn_id)
         if SESSIONS.get(user_id) is session:
             await message.reply_text(response or "Done.")  # type: ignore[attr-defined]
+        LOGGER.info("turn finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
     except Exception as exc:
+        LOGGER.exception("turn failed turn_id=%s elapsed_seconds=%.1f error_type=%s", turn_id, time.monotonic() - started, type(exc).__name__)
         if SESSIONS.get(user_id) is session:
             await message.reply_text(f"I couldn’t complete that: {exc}")  # type: ignore[attr-defined]
     finally:
@@ -447,6 +477,11 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
 
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    LOGGER.info("bot starting")
     build_application().run_polling()
     return 0
 

@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from router import Router
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You are a personal computer agent speaking naturally with your owner.
@@ -82,6 +87,17 @@ class Computer:
         return candidate
 
     def call(self, name: str, arguments: dict[str, Any], approval_callback: ApprovalCallback | None = None, deploy_callback: DeployCallback | None = None) -> str:
+        started = time.monotonic()
+        LOGGER.info("tool started name=%s", name)
+        try:
+            result = self._call(name, arguments, approval_callback, deploy_callback)
+        except Exception:
+            LOGGER.exception("tool failed name=%s elapsed_seconds=%.1f", name, time.monotonic() - started)
+            raise
+        LOGGER.info("tool finished name=%s elapsed_seconds=%.1f", name, time.monotonic() - started)
+        return result
+
+    def _call(self, name: str, arguments: dict[str, Any], approval_callback: ApprovalCallback | None = None, deploy_callback: DeployCallback | None = None) -> str:
         if name == "list_files":
             directory = self._path(arguments.get("path", "."))
             return "\n".join(sorted(str(p.relative_to(self.project.path)) for p in directory.rglob("*") if p.is_file() and ".git" not in p.parts))
@@ -162,14 +178,18 @@ class Agent:
         if self.router is None and router_enabled:
             self.router = Router(self.client, os.environ.get("OPENAI_ROUTER_MODEL", "gpt-5-mini"))
 
-    def respond(self, session: AgentSession, message: str, approval_callback: ApprovalCallback | None = None) -> str:
+    def respond(self, session: AgentSession, message: str, approval_callback: ApprovalCallback | None = None, turn_id: str = "unknown") -> str:
         session.input_items.append({"role": "user", "content": message})
+        started = time.monotonic()
+        LOGGER.info("agent started turn_id=%s project=%s", turn_id, session.project.name if session.project else "computer")
         if self.router is not None:
             decision = self.router.decide(message, _routing_context(session))
+            LOGGER.info("agent route turn_id=%s route=%s confidence=%.2f", turn_id, decision.route, decision.confidence)
             if decision.route == "small":
                 session.input_items.append({"role": "assistant", "content": decision.answer})
                 return decision.answer
         if session.project is None:
+            LOGGER.info("model request turn_id=%s phase=answer model=%s", turn_id, self.model)
             response = self.client.responses.create(
                 model=self.model,
                 instructions=SYSTEM_PROMPT,
@@ -178,6 +198,7 @@ class Agent:
             )
             text = response.output_text
             session.input_items.extend(_output_items(response))
+            LOGGER.info("agent finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
             return text
 
         tool_approval = approval_callback
@@ -193,6 +214,7 @@ class Agent:
         computer = Computer(session.project)
         self_repository = _is_self_repository(session.project)
         for _ in range(12):
+            LOGGER.info("model request turn_id=%s phase=tool_loop model=%s iteration=%s", turn_id, self.model, _ + 1)
             response = self.client.responses.create(
                 model=self.model,
                 instructions=f"{SYSTEM_PROMPT}\nCurrent project: {session.project.name} at {session.project.path}",
@@ -202,6 +224,7 @@ class Agent:
             session.input_items.extend(_output_items(response))
             calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
             if not calls:
+                LOGGER.info("agent finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
                 return response.output_text
             for call in calls:
                 try:
@@ -214,6 +237,7 @@ class Agent:
                 except Exception as exc:  # tool failures belong in the conversation
                     result = f"tool error: {exc}"
                 session.input_items.append({"type": "function_call_output", "call_id": call.call_id, "output": result})
+        LOGGER.warning("agent tool_limit turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
         return "I reached the tool-call limit for this turn."
 
 
@@ -232,25 +256,32 @@ def _requests_self_deploy(message: str) -> bool:
 
 def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | None) -> str:
     """Test, publish, and request a rebuild of the configured self repository."""
+    LOGGER.info("self_deploy started project=%s", project.name)
     if not _is_self_repository(project):
         return "self-deployment is allowed only for the configured self repository"
     if approval_callback is None:
         return "self-deployment requires Telegram approval"
 
+    LOGGER.info("self_deploy stage=tests")
     tests = subprocess.run(["python", "-m", "pytest"], cwd=project.path, capture_output=True, text=True, timeout=300)
     if tests.returncode:
+        LOGGER.info("self_deploy stage=pytest_failed fallback=unittest")
         tests = subprocess.run(
             ["python", "-m", "unittest", "discover", "-s", "tests"],
             cwd=project.path, capture_output=True, text=True, timeout=300,
         )
     if tests.returncode:
+        LOGGER.error("self_deploy failed stage=tests exit_code=%s", tests.returncode)
         return json.dumps({"stage": "tests", "exit_code": tests.returncode, "output": (tests.stdout + tests.stderr)[-12000:]})
 
+    LOGGER.info("self_deploy stage=diff")
     diff = subprocess.run(["git", "diff", "--stat", "HEAD"], cwd=project.path, capture_output=True, text=True, timeout=30)
     if diff.returncode:
         return json.dumps({"stage": "diff", "exit_code": diff.returncode, "error": diff.stderr})
     if not approval_callback("self_deploy_commit", f"commit self-repository changes after tests passed:\n{diff.stdout[-3000:]}"):
+        LOGGER.info("self_deploy stopped stage=commit_approval")
         return "deployment stopped; commit was not approved"
+    LOGGER.info("self_deploy stage=commit")
     staged = subprocess.run(["git", "add", "-A"], cwd=project.path, capture_output=True, text=True, timeout=30)
     if staged.returncode:
         return json.dumps({"stage": "git add", "exit_code": staged.returncode, "error": staged.stderr})
@@ -260,16 +291,22 @@ def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | N
     branch_result = subprocess.run(["git", "branch", "--show-current"], cwd=project.path, capture_output=True, text=True, timeout=30)
     branch = branch_result.stdout.strip()
     if branch_result.returncode or branch != "main":
+        LOGGER.error("self_deploy failed stage=branch branch=%s", branch)
         return json.dumps({"stage": "branch", "exit_code": branch_result.returncode, "branch": branch, "error": "self-deployment requires the self-repository to be checked out on main"})
     if not approval_callback("self_deploy_push", "push self-update commit to origin/main"):
+        LOGGER.info("self_deploy stopped stage=push_approval")
         return "deployment stopped; push was not approved"
+    LOGGER.info("self_deploy stage=push")
     pushed = subprocess.run(["git", "push", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
     if pushed.returncode:
         return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": (pushed.stdout + pushed.stderr)[-8000:]})
     if not approval_callback("self_deploy_restart", "rebuild the bot image and recreate the Docker Compose bot service"):
+        LOGGER.info("self_deploy stopped stage=restart_approval")
         return "changes were committed and pushed; restart was not approved"
+    LOGGER.info("self_deploy stage=restart")
     helper = os.environ.get("SELF_DEPLOY_HELPER", "/usr/local/bin/restart-personal-agent")
     deployed = subprocess.run([helper], cwd=project.path, capture_output=True, text=True, timeout=600)
+    LOGGER.info("self_deploy finished stage=restart exit_code=%s", deployed.returncode)
     return json.dumps({"stage": "restart", "exit_code": deployed.returncode, "branch": branch, "output": (deployed.stdout + deployed.stderr)[-8000:]})
 
 
