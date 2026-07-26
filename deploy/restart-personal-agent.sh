@@ -27,6 +27,6 @@ if docker image inspect "$bot_image" >/dev/null 2>&1; then
     echo "previous image saved as $rollback_image"
 fi
 
-docker compose -f "$compose_file" -p "$project_name" build bot
-docker compose -f "$compose_file" -p "$project_name" up -d --no-build --force-recreate bot
+docker-compose -f "$compose_file" -p "$project_name" build bot
+docker-compose -f "$compose_file" -p "$project_name" up -d --no-build --force-recreate bot
 echo "bot service rebuilt and recreated"
