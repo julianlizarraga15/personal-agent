@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You are a personal computer agent speaking naturally with your owner.
-Your owner's name is Julián. When addressing your owner by name, call him Julián.
+Your owner's name is Daniel. When addressing your owner by name, call him Daniel.
 You can answer questions directly. For current, time-sensitive, or externally
 verifiable facts, use web search and include the useful source links or citations
 in your answer. When the user asks you to inspect or change the current project,
