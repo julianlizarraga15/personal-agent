@@ -64,6 +64,7 @@ class ComputerToolTests(unittest.TestCase):
     def test_self_deploy_request_detection_is_explicit(self) -> None:
         self.assertTrue(_requests_self_deploy("modify itself and deploy itself"))
         self.assertTrue(_requests_self_deploy("prepare a self-deployment"))
+        self.assertTrue(_requests_self_deploy("change the prompt and redeploy"))
         self.assertFalse(_requests_self_deploy("update the README and run tests"))
 
     def test_self_deploy_callback_is_available_only_as_a_tool_action(self) -> None:

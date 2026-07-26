@@ -28,7 +28,9 @@ secrets. Do not run destructive commands, publish code, or change anything outsi
 the current project. Ask the user before consequential actions such as deleting data,
 committing, or pushing code. If the current project is the configured personal-agent
 self-repository and the user asks you to deploy your own changes, finish edits and
-tests first, then use self_deploy. Do not use self_deploy for other projects.
+tests first, then use self_deploy. Do not use self_deploy for other projects. Never
+ask for approval in ordinary response text; invoke the relevant tool and let the
+application present the approval request.
 """
 
 
@@ -250,7 +252,15 @@ def _requests_self_deploy(message: str) -> bool:
     normalized = message.lower().replace("-", " ")
     return any(
         phrase in normalized
-        for phrase in ("self deploy", "deploy itself", "modify itself", "update itself")
+        for phrase in (
+            "self deploy",
+            "deploy itself",
+            "modify itself",
+            "update itself",
+            "redeploy",
+            "rebuild and restart",
+            "rebuild the bot",
+        )
     )
 
 
