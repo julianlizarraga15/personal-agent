@@ -215,6 +215,7 @@ class Agent:
 
         computer = Computer(session.project)
         self_repository = _is_self_repository(session.project)
+        self_deploy_called = False
         for _ in range(12):
             LOGGER.info("model request turn_id=%s phase=tool_loop model=%s iteration=%s", turn_id, self.model, _ + 1)
             response = self.client.responses.create(
@@ -230,12 +231,25 @@ class Agent:
                 return response.output_text
             for call in calls:
                 try:
-                    result = computer.call(
-                        call.name,
-                        json.loads(call.arguments),
-                        tool_approval,
-                        lambda: self_deploy(session.project, tool_approval),
-                    )
+                    if call.name == "self_deploy":
+                        if self_deploy_called:
+                            result = "self-deployment was already attempted in this turn; do not repeat it"
+                            LOGGER.warning("self_deploy duplicate_blocked turn_id=%s", turn_id)
+                        else:
+                            self_deploy_called = True
+                            result = computer.call(
+                                call.name,
+                                json.loads(call.arguments),
+                                tool_approval,
+                                lambda: self_deploy(session.project, tool_approval),
+                            )
+                    else:
+                        result = computer.call(
+                            call.name,
+                            json.loads(call.arguments),
+                            tool_approval,
+                            lambda: self_deploy(session.project, tool_approval),
+                        )
                 except Exception as exc:  # tool failures belong in the conversation
                     result = f"tool error: {exc}"
                 session.input_items.append({"type": "function_call_output", "call_id": call.call_id, "output": result})
