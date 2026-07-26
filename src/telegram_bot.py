@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import logging
 import os
@@ -434,7 +435,16 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             f"details: {request.summary}\n"
             f"Reply /approve {request.request_id} or /reject {request.request_id}."
         )
-        asyncio.run_coroutine_threadsafe(message.reply_text(prompt), loop)  # type: ignore[attr-defined]
+        delivery = asyncio.run_coroutine_threadsafe(message.reply_text(prompt), loop)  # type: ignore[attr-defined]
+        try:
+            delivery.result(timeout=30)
+            LOGGER.info("turn approval_prompt_delivered turn_id=%s request_id=%s", turn_id, request.request_id)
+        except FutureTimeoutError:
+            LOGGER.error("turn approval_prompt_failed turn_id=%s request_id=%s reason=delivery_timeout", turn_id, request.request_id)
+            request.resolve(False)
+        except Exception:
+            LOGGER.exception("turn approval_prompt_failed turn_id=%s request_id=%s", turn_id, request.request_id)
+            request.resolve(False)
 
     def request_approval(action: str, summary: str) -> bool:
         return session.request_approval(action, summary, notify)
@@ -481,6 +491,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     LOGGER.info("bot starting")
     build_application().run_polling()
     return 0
