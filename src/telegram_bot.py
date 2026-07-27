@@ -449,8 +449,26 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
     def request_approval(action: str, summary: str) -> bool:
         return session.request_approval(action, summary, notify)
 
+    def restart_notice() -> None:
+        LOGGER.info("turn restart_notice turn_id=%s", turn_id)
+        delivery = asyncio.run_coroutine_threadsafe(
+            message.reply_text("Changes pushed. Rebuilding and restarting the bot now…"),  # type: ignore[attr-defined]
+            loop,
+        )
+        try:
+            delivery.result(timeout=30)
+        except Exception:
+            LOGGER.exception("turn restart_notice_failed turn_id=%s", turn_id)
+
     try:
-        response = await asyncio.to_thread(Agent().respond, session.agent, task, request_approval, turn_id)
+        response = await asyncio.to_thread(
+            Agent().respond,
+            session.agent,
+            task,
+            request_approval,
+            turn_id,
+            restart_notice,
+        )
         if SESSIONS.get(user_id) is session:
             await message.reply_text(response or "Done.")  # type: ignore[attr-defined]
         LOGGER.info("turn finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)

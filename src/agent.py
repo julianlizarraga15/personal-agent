@@ -39,6 +39,7 @@ WEB_SEARCH_TOOL = {"type": "web_search"}
 
 ApprovalCallback = Callable[[str, str], bool]
 DeployCallback = Callable[[], str]
+RestartNoticeCallback = Callable[[], None]
 
 
 @dataclass
@@ -180,7 +181,14 @@ class Agent:
         if self.router is None and router_enabled:
             self.router = Router(self.client, os.environ.get("OPENAI_ROUTER_MODEL", "gpt-5-mini"))
 
-    def respond(self, session: AgentSession, message: str, approval_callback: ApprovalCallback | None = None, turn_id: str = "unknown") -> str:
+    def respond(
+        self,
+        session: AgentSession,
+        message: str,
+        approval_callback: ApprovalCallback | None = None,
+        turn_id: str = "unknown",
+        restart_notice_callback: RestartNoticeCallback | None = None,
+    ) -> str:
         session.input_items.append({"role": "user", "content": message})
         started = time.monotonic()
         LOGGER.info("agent started turn_id=%s project=%s", turn_id, session.project.name if session.project else "computer")
@@ -241,7 +249,7 @@ class Agent:
                                 call.name,
                                 json.loads(call.arguments),
                                 tool_approval,
-                                lambda: self_deploy(session.project, tool_approval),
+                                lambda: self_deploy(session.project, tool_approval, restart_notice_callback),
                             )
                             self_deploy_attempted = True
                             last_self_deploy_result = result
@@ -250,7 +258,7 @@ class Agent:
                             call.name,
                             json.loads(call.arguments),
                             tool_approval,
-                            lambda: self_deploy(session.project, tool_approval),
+                            lambda: self_deploy(session.project, tool_approval, restart_notice_callback),
                         )
                 except Exception as exc:  # tool failures belong in the conversation
                     result = f"tool error: {exc}"
@@ -285,7 +293,11 @@ def _self_deploy_retryable(result: str) -> bool:
     return "self-deployment found no uncommitted changes" in result
 
 
-def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | None) -> str:
+def self_deploy(
+    project: ProjectContext,
+    approval_callback: ApprovalCallback | None,
+    restart_notice_callback: RestartNoticeCallback | None = None,
+) -> str:
     """Test, publish, and request a rebuild of the configured self repository."""
     LOGGER.info("self_deploy started project=%s", project.name)
     if not _is_self_repository(project):
@@ -337,6 +349,8 @@ def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | N
     if not approval_callback("self_deploy_restart", "rebuild the bot image and recreate the Docker Compose bot service"):
         LOGGER.info("self_deploy stopped stage=restart_approval")
         return "changes were committed and pushed; restart was not approved"
+    if restart_notice_callback is not None:
+        restart_notice_callback()
     LOGGER.info("self_deploy stage=restart")
     helper = os.environ.get("SELF_DEPLOY_HELPER", "/usr/local/bin/restart-personal-agent")
     deployed = subprocess.run([helper], cwd=project.path, capture_output=True, text=True, timeout=600)
