@@ -142,6 +142,10 @@ class RouterTests(unittest.TestCase):
         decision = router.decide("hello", {"project_selected": False})
         self.assertEqual(decision, RouteDecision("small", "Hello!", 0.98))
 
+    def test_accepts_medium_route(self) -> None:
+        router = Router(self.FakeClient('{"route":"medium","answer":"","confidence":0.95}'), "small")
+        self.assertEqual(router.decide("inspect this code", {}).route, "medium")
+
     def test_low_confidence_small_route_falls_back_to_large(self) -> None:
         router = Router(self.FakeClient('{"route":"small","answer":"Maybe","confidence":0.6}'), "small")
         self.assertEqual(router.decide("do that", {}).route, "large")
@@ -165,17 +169,46 @@ class RouterTests(unittest.TestCase):
         result = Agent(client=UnusedClient(), router=SmallRouter()).respond(AgentSession(), "hello")
         self.assertEqual(result, "A cheap answer")
 
+    def test_agent_sends_medium_route_to_intermediate_model(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.models = []
+
+            def create(self, **kwargs):
+                self.models.append(kwargs["model"])
+                return SimpleNamespace(output=[], output_text="medium answer")
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.responses = FakeResponses()
+
+        class MediumRouter:
+            def decide(self, message, context):
+                return RouteDecision("medium", confidence=0.95)
+
+        client = FakeClient()
+        result = Agent(client=client, intermediate_model="middle", router=MediumRouter()).respond(AgentSession(), "inspect the file")
+        self.assertEqual(result, "medium answer")
+        self.assertEqual(client.responses.models, ["middle"])
+
     def test_agent_sends_large_route_to_existing_model(self) -> None:
         class FakeResponses:
+            def __init__(self) -> None:
+                self.models = []
+
             def create(self, **kwargs):
+                self.models.append(kwargs["model"])
                 return SimpleNamespace(output=[], output_text="large answer")
 
         class FakeClient:
-            responses = FakeResponses()
+            def __init__(self) -> None:
+                self.responses = FakeResponses()
 
         class LargeRouter:
             def decide(self, message, context):
                 return RouteDecision("large", confidence=0.7)
 
-        result = Agent(client=FakeClient(), router=LargeRouter()).respond(AgentSession(), "edit the file")
+        client = FakeClient()
+        result = Agent(client=client, model="large", router=LargeRouter()).respond(AgentSession(), "edit the file")
         self.assertEqual(result, "large answer")
+        self.assertEqual(client.responses.models, ["large"])

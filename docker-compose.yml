@@ -16,6 +16,10 @@ services:
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
       WORKER_IMAGE: repository-worker:latest
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      OPENAI_ROUTER_ENABLED: ${OPENAI_ROUTER_ENABLED:-1}
+      OPENAI_ROUTER_MODEL: ${OPENAI_ROUTER_MODEL:-gpt-5-mini}
+      OPENAI_INTERMEDIATE_MODEL: ${OPENAI_INTERMEDIATE_MODEL:-gpt-5.6-terra}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6}
       AGENT_WORKSPACE_ROOT: /workspace/personal-agent
       SELF_REPOSITORY_PATH: /workspace/personal-agent
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml

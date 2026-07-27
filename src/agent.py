@@ -168,6 +168,7 @@ class Agent:
         self,
         client: Any | None = None,
         model: str | None = None,
+        intermediate_model: str | None = None,
         router: Router | None = None,
         router_enabled: bool | None = None,
     ) -> None:
@@ -177,6 +178,7 @@ class Agent:
             client = OpenAI()
         self.client = client
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5.6")
+        self.intermediate_model = intermediate_model or os.environ.get("OPENAI_INTERMEDIATE_MODEL", "gpt-5.6-terra")
         if router_enabled is None:
             router_enabled = os.environ.get("OPENAI_ROUTER_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
         self.router = router if router_enabled else None
@@ -193,6 +195,7 @@ class Agent:
     ) -> str:
         session.input_items.append({"role": "user", "content": message})
         started = time.monotonic()
+        selected_model = self.model
         LOGGER.info("agent started turn_id=%s project=%s", turn_id, session.project.name if session.project else "computer")
         if self.router is not None:
             decision = self.router.decide(message, _routing_context(session))
@@ -200,10 +203,12 @@ class Agent:
             if decision.route == "small":
                 session.input_items.append({"role": "assistant", "content": decision.answer})
                 return decision.answer
+            if decision.route == "medium":
+                selected_model = self.intermediate_model
         if session.project is None:
-            LOGGER.info("model request turn_id=%s phase=answer model=%s", turn_id, self.model)
+            LOGGER.info("model request turn_id=%s phase=answer model=%s", turn_id, selected_model)
             response = self.client.responses.create(
-                model=self.model,
+                model=selected_model,
                 instructions=SYSTEM_PROMPT,
                 tools=[WEB_SEARCH_TOOL],
                 input=session.input_items,
@@ -228,9 +233,9 @@ class Agent:
         self_deploy_attempted = False
         last_self_deploy_result = ""
         for _ in range(12):
-            LOGGER.info("model request turn_id=%s phase=tool_loop model=%s iteration=%s", turn_id, self.model, _ + 1)
+            LOGGER.info("model request turn_id=%s phase=tool_loop model=%s iteration=%s", turn_id, selected_model, _ + 1)
             response = self.client.responses.create(
-                model=self.model,
+                model=selected_model,
                 instructions=f"{SYSTEM_PROMPT}\nCurrent project: {session.project.name} at {session.project.path}",
                 tools=[WEB_SEARCH_TOOL, *tool_definitions(self_repository)],
                 input=session.input_items,
