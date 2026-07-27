@@ -58,21 +58,23 @@ class PendingApproval:
     request_id: str
     action: str
     summary: str
+    prompt_chat_id: int | None = None
+    prompt_message_id: int | None = None
     event: threading.Event = field(default_factory=threading.Event, repr=False)
     approved: bool | None = None
-    approval_chat_id: int | None = None
-    approval_message_id: int | None = None
 
     def bind_message(self, chat_id: int, message_id: int) -> None:
         """Associate this request with the Telegram message it asks to approve."""
 
-        self.approval_chat_id = chat_id
-        self.approval_message_id = message_id
+        self.prompt_chat_id = chat_id
+        self.prompt_message_id = message_id
 
-    def resolve(self, approved: bool) -> None:
-        if not self.event.is_set():
-            self.approved = approved
-            self.event.set()
+    def resolve(self, approved: bool) -> bool:
+        if self.event.is_set():
+            return False
+        self.approved = approved
+        self.event.set()
+        return True
 
 
 @dataclass
@@ -142,23 +144,40 @@ class ConversationSession:
             request = self.pending_approval
             if request is None or (request_id is not None and request.request_id != request_id):
                 return False
-            request.resolve(approved)
+            if not request.resolve(approved):
+                return False
             LOGGER.info("approval resolved request_id=%s outcome=%s", request.request_id, "approved" if approved else "rejected")
             return True
 
     def resolve_reaction_approval(self, chat_id: int, message_id: int, approved: bool) -> bool:
         """Resolve only an approval reaction placed on the matching prompt."""
 
+        return self.resolve_approval_for_prompt(chat_id, message_id, approved)
+
+    def bind_approval_prompt(self, request_id: str, chat_id: int, message_id: int) -> bool:
+        with self.approval_lock:
+            request = self.pending_approval
+            if request is None or request.request_id != request_id or request.event.is_set():
+                return False
+            request.prompt_chat_id = chat_id
+            request.prompt_message_id = message_id
+            return True
+
+    def resolve_approval_for_prompt(self, chat_id: int, message_id: int, approved: bool) -> bool:
         with self.approval_lock:
             request = self.pending_approval
             if (
                 request is None
-                or request.approval_chat_id != chat_id
-                or request.approval_message_id != message_id
+                or request.prompt_chat_id != chat_id
+                or request.prompt_message_id != message_id
+                or not request.resolve(approved)
             ):
                 return False
-            request.resolve(approved)
-            LOGGER.info("approval resolved by reaction request_id=%s outcome=%s", request.request_id, "approved" if approved else "rejected")
+            LOGGER.info(
+                "approval resolved request_id=%s outcome=%s source=reaction",
+                request.request_id,
+                "approved" if approved else "rejected",
+            )
             return True
 
     def cancel_approval(self) -> None:
@@ -353,25 +372,21 @@ async def reject_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _resolve_approval(update, context, False)
 
 
-def _has_thumbs_up(reactions: object) -> bool:
-    """Return whether Telegram's updated reaction list contains 👍."""
-
-    return any(getattr(reaction, "emoji", None) == "👍" for reaction in reactions or ())
-
-
-async def approve_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Approve a pending action when the owner reacts 👍 to its prompt."""
-
-    del context
+async def approval_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reaction = update.message_reaction
     if reaction is None or reaction.user is None or not _is_allowed(reaction.user.id):
         return
-    if not _has_thumbs_up(reaction.new_reaction):
+    old_emojis = {item.emoji for item in reaction.old_reaction if hasattr(item, "emoji")}
+    new_emojis = {item.emoji for item in reaction.new_reaction if hasattr(item, "emoji")}
+    decisions = (new_emojis - old_emojis) & {"👍", "👎"}
+    if len(decisions) != 1:
         return
+    approved = decisions == {"👍"}
     session = SESSIONS.get(reaction.user.id)
-    if session is None or not session.resolve_reaction_approval(reaction.chat.id, reaction.message_id, True):
+    if session is None or not session.resolve_approval_for_prompt(reaction.chat.id, reaction.message_id, approved):
         return
-    await update.get_bot().send_message(chat_id=reaction.chat.id, text="Approved. I’ll continue.")
+    text = "Approved. I’ll continue." if approved else "Rejected. I’ll leave it unchanged."
+    await context.bot.send_message(chat_id=reaction.chat.id, text=text)
 
 
 async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -385,7 +400,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if session is not None and session.pending_approval is not None:
         request = session.pending_approval
         lines.append(f"approval pending: {request.request_id} ({request.action})")
-        lines.append("approval delivery failed but request remains pending" if session.approval_delivery_failed else f"reply /approve {request.request_id} or /reject {request.request_id}")
+        lines.append("approval delivery failed but request remains pending" if session.approval_delivery_failed else f"react 👍/👎 or reply /approve {request.request_id} or /reject {request.request_id}")
     manifest = DeploymentManifest(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state")).read()
     if manifest and manifest.get("status") not in {None, "healthy"}:
         status = str(manifest.get("status"))
@@ -431,7 +446,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await message.reply_text(
         "Chat normally to work in the configured computer workspace, or use /project <directory-name> to narrow the context.\n"
         "/new starts over, /stop forgets the session, /pending shows deployment state, and /run <url> <task> runs one task.\n"
-        "For requested edits or Git actions, use /approve <id> or /reject <id>."
+        "For requested edits or Git actions, react 👍/👎 to the approval prompt or use /approve <id> or /reject <id>."
     )
 
 
@@ -448,7 +463,7 @@ async def conversational_message(update: Update, context: ContextTypes.DEFAULT_T
         pending = session.pending_approval
         if pending is not None:
             await message.reply_text(
-                f"An approval is pending ({pending.request_id}). Reply /approve {pending.request_id} or /reject {pending.request_id}."
+                f"An approval is pending ({pending.request_id}). React 👍/👎 to its prompt or reply /approve {pending.request_id} or /reject {pending.request_id}."
             )
         else:
             await message.reply_text("I’m still working on the previous request.")
@@ -524,12 +539,17 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             f"Approval required ({request.request_id})\n"
             f"action: {request.action}\n"
             f"details: {request.summary}\n"
-            f"React 👍 to this message to approve, or reply /approve {request.request_id} or /reject {request.request_id}."
+            f"React 👍 to approve or 👎 to reject, or reply /approve {request.request_id} or /reject {request.request_id}."
         )
         delivery = asyncio.run_coroutine_threadsafe(message.reply_text(prompt), loop)  # type: ignore[attr-defined]
         try:
-            approval_message = delivery.result(timeout=30)
-            request.bind_message(approval_message.chat_id, approval_message.message_id)
+            sent_message = delivery.result(timeout=30)
+            chat_id = getattr(getattr(sent_message, "chat", None), "id", None)
+            message_id = getattr(sent_message, "message_id", None)
+            if isinstance(chat_id, int) and isinstance(message_id, int):
+                session.bind_approval_prompt(request.request_id, chat_id, message_id)
+            else:
+                LOGGER.warning("turn approval_prompt_unbound turn_id=%s request_id=%s", turn_id, request.request_id)
             LOGGER.info("turn approval_prompt_delivered turn_id=%s request_id=%s", turn_id, request.request_id)
         except FutureTimeoutError:
             session.approval_delivery_failed = True
@@ -635,8 +655,8 @@ async def report_startup_deployment(application: object) -> None:
 
 
 def build_application(environ: dict[str, str] | None = None) -> Application:
-    from telegram.ext import Application, CommandHandler, MessageReactionHandler
-    from telegram.ext import MessageHandler, filters
+    from telegram.ext import Application, CommandHandler
+    from telegram.ext import MessageHandler, MessageReactionHandler, filters
 
     token, allowed_id, _ = required_settings(environ)
     application = Application.builder().token(token).concurrent_updates(True).post_init(report_startup_deployment).build()
@@ -646,9 +666,15 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     application.add_handler(CommandHandler("stop", stop_session))
     application.add_handler(CommandHandler("approve", approve_action))
     application.add_handler(CommandHandler("reject", reject_action))
-    application.add_handler(MessageReactionHandler(approve_reaction, user_id=allowed_id))
     application.add_handler(CommandHandler("pending", pending_command))
     application.add_handler(CommandHandler(["help", "start"], help_command))
+    application.add_handler(
+        MessageReactionHandler(
+            approval_reaction,
+            user_id=allowed_id,
+            message_reaction_types=MessageReactionHandler.MESSAGE_REACTION_UPDATED,
+        )
+    )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, conversational_message))
     return application
 
@@ -662,7 +688,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     LOGGER.info("bot starting")
-    build_application().run_polling()
+    build_application().run_polling(allowed_updates=("message", "message_reaction"))
     return 0
 
 

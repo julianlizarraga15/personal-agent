@@ -3,10 +3,12 @@ import os
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
-from telegram_bot import ConversationSession, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, required_settings, run_docker_worker, workspace_project_path
+import telegram_bot
+from telegram_bot import ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, required_settings, run_docker_worker, workspace_project_path
 
 
 class FakeProcess:
@@ -100,6 +102,18 @@ class TelegramWorkerTests(unittest.TestCase):
         self.assertTrue(session.resolve_approval(None, True))
         thread.join(timeout=1)
         self.assertEqual(result, [True])
+
+    def test_pending_approval_resolves_only_its_bound_prompt_once(self) -> None:
+        session = ConversationSession()
+        request = PendingApproval("approval-1", "write_file", "write notes.txt")
+        session.pending_approval = request
+
+        self.assertTrue(session.bind_approval_prompt(request.request_id, 42, 100))
+        self.assertFalse(session.resolve_approval_for_prompt(42, 99, True))
+        self.assertFalse(session.resolve_approval_for_prompt(41, 100, True))
+        self.assertTrue(session.resolve_approval_for_prompt(42, 100, True))
+        self.assertFalse(session.resolve_approval_for_prompt(42, 100, False))
+        self.assertTrue(request.approved)
 
     def test_approval_prompt_failure_does_not_reject_pending_action(self) -> None:
         session = ConversationSession()
@@ -230,6 +244,106 @@ class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):
             await _monitor_deployment(succeed, timeout_seconds=1)
             self.assertEqual(manifest.read()["status"], "healthy")
         self.assertEqual(len(messages), 1)
+
+
+class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    def tearDown(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    @staticmethod
+    def reaction_update(
+        emoji: str | tuple[str, ...],
+        *,
+        user_id: int | None = 42,
+        chat_id: int = 42,
+        message_id: int = 100,
+        old_emojis: tuple[str, ...] = (),
+    ) -> SimpleNamespace:
+        new_emojis = (emoji,) if isinstance(emoji, str) else emoji
+        return SimpleNamespace(
+            message_reaction=SimpleNamespace(
+                user=SimpleNamespace(id=user_id) if user_id is not None else None,
+                actor_chat=SimpleNamespace(id=chat_id) if user_id is None else None,
+                chat=SimpleNamespace(id=chat_id),
+                message_id=message_id,
+                old_reaction=tuple(SimpleNamespace(emoji=value) for value in old_emojis),
+                new_reaction=tuple(SimpleNamespace(emoji=value) for value in new_emojis),
+            )
+        )
+
+    async def test_thumbs_up_approves_matching_prompt_and_confirms(self) -> None:
+        session = ConversationSession()
+        request = PendingApproval("approval-1", "write_file", "write notes.txt")
+        session.pending_approval = request
+        session.bind_approval_prompt(request.request_id, 42, 100)
+        telegram_bot.SESSIONS[42] = session
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}):
+            await telegram_bot.approval_reaction(self.reaction_update("👍"), context)
+
+        self.assertTrue(request.approved)
+        context.bot.send_message.assert_awaited_once_with(chat_id=42, text="Approved. I’ll continue.")
+
+    async def test_thumbs_down_rejects_matching_prompt_and_confirms(self) -> None:
+        session = ConversationSession()
+        request = PendingApproval("approval-1", "write_file", "write notes.txt")
+        session.pending_approval = request
+        session.bind_approval_prompt(request.request_id, 42, 100)
+        telegram_bot.SESSIONS[42] = session
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}):
+            await telegram_bot.approval_reaction(self.reaction_update("👎"), context)
+
+        self.assertFalse(request.approved)
+        context.bot.send_message.assert_awaited_once_with(chat_id=42, text="Rejected. I’ll leave it unchanged.")
+
+    async def test_reaction_must_be_new_authorized_and_on_exact_prompt(self) -> None:
+        ignored_updates = (
+            self.reaction_update("👍", user_id=7),
+            self.reaction_update("👍", user_id=None),
+            self.reaction_update("👍", chat_id=7),
+            self.reaction_update("👍", message_id=99),
+            self.reaction_update("👍", old_emojis=("👍",)),
+            self.reaction_update(("👍", "👎")),
+            self.reaction_update("❤️"),
+        )
+
+        for update in ignored_updates:
+            with self.subTest(update=update):
+                session = ConversationSession()
+                request = PendingApproval("approval-1", "write_file", "write notes.txt")
+                session.pending_approval = request
+                session.bind_approval_prompt(request.request_id, 42, 100)
+                telegram_bot.SESSIONS[42] = session
+                context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}):
+                    await telegram_bot.approval_reaction(update, context)
+                self.assertIsNone(request.approved)
+                context.bot.send_message.assert_not_awaited()
+
+    def test_main_explicitly_requests_message_reaction_updates(self) -> None:
+        application = SimpleNamespace(run_polling=unittest.mock.Mock())
+        with patch("telegram_bot.build_application", return_value=application):
+            self.assertEqual(telegram_bot.main([]), 0)
+
+        application.run_polling.assert_called_once_with(allowed_updates=("message", "message_reaction"))
+
+    def test_application_registers_reaction_handler(self) -> None:
+        from telegram.ext import MessageReactionHandler
+
+        application = telegram_bot.build_application(
+            {"TELEGRAM_BOT_TOKEN": "123:token", "TELEGRAM_ALLOWED_USER_ID": "42"}
+        )
+        handlers = [handler for group in application.handlers.values() for handler in group]
+
+        reaction_handlers = [handler for handler in handlers if isinstance(handler, MessageReactionHandler)]
+        self.assertEqual(len(reaction_handlers), 1)
+        self.assertIs(reaction_handlers[0].callback, telegram_bot.approval_reaction)
 
 
 if __name__ == "__main__":

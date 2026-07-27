@@ -7,7 +7,7 @@ Last updated: 2026-07-27
 - Repository setup and initial project structure are present.
 - A model-backed conversational agent prototype is present in `src/agent.py`.
 - Telegram integration can handle ordinary messages in the default workspace, `/project`, `/new`, `/stop`, and legacy `/run`.
-- File writes and dedicated Git commit/push actions now pause for Telegram approval via `/approve <id>` or `/reject <id>`.
+- File writes and dedicated Git commit/push actions now pause for Telegram approval via 👍/👎 reactions on the exact prompt or `/approve <id>` and `/reject <id>`.
 - The conversational agent now has the OpenAI Responses API hosted `web_search` tool for current external information and source citations.
 - A conservative configurable small-model router now answers high-confidence simple messages directly and falls back to the large model for coding, tools, web search, ambiguity, or routing failures.
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
@@ -41,12 +41,10 @@ Last updated: 2026-07-27
 - Sessions are currently in memory and are lost when the bot restarts.
 - The conversational agent uses the mounted workspace as its default `computer` context; `/project` can narrow it to a subdirectory.
 - Direct OpenAI remains the default provider; OpenRouter is a possible compatibility/fallback backend, not yet implemented.
-- Approval is exact-action, single-pending-request, text-command based, and expires after five minutes.
+- Approval is exact-action, single-pending-request, bound to its Telegram prompt for reactions, and expires after five minutes; text commands remain available.
 
 ## Validation
 
-- Current validation: 63 unit tests, Python compilation, `docker compose config`, and `git diff --check` pass. Coverage includes controller restart, Docker/build/recreate/rollback failures, storage failure, corrupt state, Git network/auth conflicts, and Telegram delivery retry. A live queued deployment and controlled startup-failure rollback both completed successfully; bot and deployer containers are healthy.
-- The required literal `python -m pytest` validation is unavailable because `python` is not installed in the environment.
-- `python3 -m pytest` is also unavailable because pytest is not installed.
-- Python compilation and `docker compose config` pass with placeholder validation environment values.
-- No live Docker build, bot launch, Telegram exchange, model call, or push has been validated here.
+- Current validation: 69 unit tests pass via `python -m pytest` in a temporary environment, including reaction authorization, exact-message matching, reaction handler registration, and polling configuration. Python compilation and `git diff --check` also pass.
+- Earlier live deployment validation covered a queued deployment and controlled startup-failure rollback; the bot and deployer containers were healthy at that stopping point.
+- No live Docker build, bot launch, Telegram reaction exchange, model call, deployment, or push has been validated for the reaction change.
