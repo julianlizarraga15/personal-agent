@@ -337,6 +337,17 @@ class RouterTests(unittest.TestCase):
         router = Router(self.FakeClient("not json"), "small")
         self.assertEqual(router.decide("anything", {}).route, "large")
 
+    def test_small_route_never_grants_model_requested_capabilities(self) -> None:
+        router = Router(
+            self.FakeClient('{"route":"small","answer":"Done","confidence":0.99,"capabilities":["web","computer"]}'),
+            "small",
+        )
+
+        decision = router.decide("hello", {})
+
+        self.assertEqual(decision.route, "small")
+        self.assertEqual(decision.capabilities, frozenset())
+
     def test_agent_returns_small_answer_without_calling_large_model(self) -> None:
         class UnusedClient:
             class Responses:

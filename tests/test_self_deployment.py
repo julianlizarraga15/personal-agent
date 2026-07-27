@@ -86,6 +86,50 @@ class SelfDeploymentTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertFalse(DeploymentQueue(self.state_dir).request_path.exists())
 
+    def test_failed_test_suites_stop_before_approval_commit_or_queue(self) -> None:
+        (self.repository / "README.md").write_text("changed\n")
+        original_head = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        approvals: list[tuple[str, str]] = []
+        original = self_deployment._command
+
+        def command(args, repo, timeout=120):
+            if args[:3] == ["python", "-m", "pytest"] or args[:4] == ["python", "-m", "unittest", "discover"]:
+                return subprocess.CompletedProcess(args, 1, "", "tests failed")
+            return original(args, repo, timeout)
+
+        with patch.object(self_deployment, "_command", side_effect=command), patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": str(self.state_dir)}):
+            result = json.loads(
+                self_deployment.publish_and_queue(
+                    self.repository, lambda action, summary: approvals.append((action, summary)) or True
+                )
+            )
+
+        current_head = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.assertEqual((result["stage"], result["status"]), ("tests", "failed"))
+        self.assertEqual(approvals, [])
+        self.assertEqual(current_head, original_head)
+        self.assertFalse(DeploymentQueue(self.state_dir).request_path.exists())
+
+    def test_rejected_commit_approval_leaves_changes_unpublished(self) -> None:
+        (self.repository / "README.md").write_text("changed\n")
+        original_head = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        result = self._run(self.repository, approval=lambda *_: False)
+
+        current_head = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.assertEqual((result["stage"], result["status"]), ("commit", "rejected"))
+        self.assertEqual(current_head, original_head)
+        self.assertEqual((self.repository / "README.md").read_text(), "changed\n")
+        self.assertFalse(DeploymentQueue(self.state_dir).request_path.exists())
+
     def test_push_authentication_failure_does_not_queue(self) -> None:
         (self.repository / "README.md").write_text("changed\n")
         original = self_deployment._command
