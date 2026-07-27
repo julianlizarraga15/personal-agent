@@ -13,18 +13,19 @@ from router import RouteDecision, Router
 
 
 class ComputerToolTests(unittest.TestCase):
-    def test_writes_require_approval_and_stay_inside_project(self) -> None:
+    def test_writes_do_not_require_approval_and_stay_inside_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             project = ProjectContext("demo", root)
             computer = Computer(project)
-            denied = computer.call(
-                "write_file", {"path": "notes.txt", "content": "hello"}, lambda action, summary: False
+            requested: list[tuple[str, str]] = []
+            computer.call(
+                "write_file",
+                {"path": "notes.txt", "content": "hello"},
+                lambda action, summary: requested.append((action, summary)) or False,
             )
-            self.assertIn("not changed", denied)
-            self.assertFalse((root / "notes.txt").exists())
-            computer.call("write_file", {"path": "notes.txt", "content": "hello"}, lambda action, summary: True)
             self.assertEqual(computer.call("read_file", {"path": "notes.txt"}), "hello")
+            self.assertEqual(requested, [])
             with self.assertRaises(ValueError):
                 computer.call("read_file", {"path": "../secret.txt"})
 
@@ -61,6 +62,8 @@ class ComputerToolTests(unittest.TestCase):
             names,
             {"list_files", "read_file", "write_file", "run_command", "git_status", "git_diff", "git_commit", "git_push"},
         )
+        write_file = next(tool for tool in tool_definitions() if tool["name"] == "write_file")
+        self.assertNotIn("approval", write_file["description"].lower())
 
     def test_self_deploy_tool_is_opt_in(self) -> None:
         self.assertNotIn("self_deploy", {tool["name"] for tool in tool_definitions()})

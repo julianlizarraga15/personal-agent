@@ -30,9 +30,10 @@ secrets. Do not run destructive commands, publish code, or change anything outsi
 the current project. Ask the user before consequential actions such as deleting data,
 committing, or pushing code. If the current project is the configured personal-agent
 self-repository and the user asks you to deploy your own changes, finish edits and
-tests first, then use self_deploy. Do not use self_deploy for other projects. Never
-ask for approval in ordinary response text; invoke the relevant tool and let the
-application present the approval request.
+tests first, then use self_deploy. Do not use self_deploy for other projects. File
+edits within the current project do not require approval. Never ask for approval in
+ordinary response text; invoke the relevant tool and let the application present the
+approval request when one is required.
 """
 
 
@@ -62,7 +63,7 @@ def tool_definitions(include_self_deploy: bool = False) -> list[dict[str, Any]]:
     tools = [
         {"type": "function", "name": "list_files", "description": "List files in the current project.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Relative directory, default '.'."}}, "additionalProperties": False}},
         {"type": "function", "name": "read_file", "description": "Read a UTF-8 text file in the current project.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}},
-        {"type": "function", "name": "write_file", "description": "Replace a UTF-8 text file in the current project after user approval.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}},
+        {"type": "function", "name": "write_file", "description": "Replace a UTF-8 text file in the current project.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}},
         {"type": "function", "name": "run_command", "description": "Run a non-destructive shell command in the current project, typically tests or inspection.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"], "additionalProperties": False}},
         {"type": "function", "name": "git_status", "description": "Show the current Git status.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
         {"type": "function", "name": "git_diff", "description": "Show the current Git diff.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
@@ -111,8 +112,6 @@ class Computer:
         if name == "write_file":
             path = self._path(arguments["path"])
             content = arguments["content"]
-            if not self._approve(approval_callback, "write_file", f"write {path.relative_to(self.project.path)} ({len(content)} bytes)"):
-                return "approval denied or expired; file was not changed"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             return f"wrote {path.relative_to(self.project.path)}"
