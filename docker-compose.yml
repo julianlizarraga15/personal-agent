@@ -16,7 +16,7 @@ services:
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
       WORKER_IMAGE: repository-worker:latest
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
-      AGENT_WORKSPACE_ROOT: /workspace
+      AGENT_WORKSPACE_ROOT: /workspace/personal-agent
       SELF_REPOSITORY_PATH: /workspace/personal-agent
       SELF_DEPLOY_HELPER: /usr/local/bin/restart-personal-agent
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
