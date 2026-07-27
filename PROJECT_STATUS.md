@@ -13,9 +13,9 @@ Last updated: 2026-07-27
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
 - The current outer checkout is on `main`, one commit ahead of `origin/main` (`30914bb`, commit subject `l`).
 - An older, clean `codex/initial-project` checkout also exists under `workspace/personal-agent`; it was left untouched.
-- The live Telegram/Docker deployment has not been verified because no Docker daemon is available in this environment.
+- The live Telegram/Docker deployment is verified with a healthy bot and persistent deployer service.
 - Self-deployment now has durable restart state, single-flight locking, readiness verification, rollback, main/origin preflight, and `/pending` status reporting.
-- Self-deployment is being moved to a persistent deployer service so rollback authority survives bot replacement; clean published commits can be redeployed after interrupted attempts.
+- Self-deployment now uses a persistent deployer service, so rollback authority survives bot replacement and clean published commits can be redeployed after interrupted attempts.
 
 ## What we are building
 
@@ -24,11 +24,11 @@ Last updated: 2026-07-27
 
 ## Last stopping point
 
-- Persistent-controller deployment hardening and the Cornelio identity change are the current release target.
+- Persistent-controller deployment hardening and the Cornelio identity change are deployed.
 
 ## Next steps
 
-- Bootstrap and verify the dedicated deployer, then perform a controlled startup rollback drill.
+- Continue normal product work; update the stable deployer image manually only when deployment infrastructure changes.
 - Make the model provider configurable (`OPENAI_BASE_URL`, API key, and model), keeping direct OpenAI as the default and adding OpenRouter as an optional backend.
 - Verify the bot end-to-end with Docker and Telegram using a non-sensitive workspace checkout.
 - Move tool execution behind a persistent sandbox container and remove the bot's direct Docker-socket dependency when practical.
@@ -45,7 +45,7 @@ Last updated: 2026-07-27
 
 ## Validation
 
-- Current validation: 51 unit tests pass; Python compilation, `docker compose config`, and `git diff --check` pass. Live deployer/bot verification remains before handoff.
+- Current validation: 51 unit tests, Python compilation, `docker compose config`, and `git diff --check` pass. A live queued deployment and a controlled startup-failure rollback both completed successfully; bot and deployer containers are healthy.
 - The required literal `python -m pytest` validation is unavailable because `python` is not installed in the environment.
 - `python3 -m pytest` is also unavailable because pytest is not installed.
 - Python compilation and `docker compose config` pass with placeholder validation environment values.
