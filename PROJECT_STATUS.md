@@ -11,8 +11,8 @@ Last updated: 2026-07-27
 - The conversational agent now has the OpenAI Responses API hosted `web_search` tool for current external information and source citations.
 - A conservative configurable small-model router now answers high-confidence simple messages directly and falls back to the large model for coding, tools, web search, ambiguity, or routing failures.
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
-- The current outer checkout is on `main`, one commit ahead of `origin/main` (`30914bb`, commit subject `l`).
-- An older, clean `codex/initial-project` checkout also exists under `workspace/personal-agent`; it was left untouched.
+- The outer and live deployment checkouts are on `main` and aligned with `origin/main`.
+- Local reaction-handler edits that predated the deployment are preserved in the live checkout as the named stash `pre-reaction-deploy-local-edits`; the published implementation supersedes their behavior.
 - The live Telegram/Docker deployment is verified with a healthy bot and persistent deployer service.
 - Self-deployment now has durable restart state, single-flight locking, readiness verification, rollback, main/origin preflight, and `/pending` status reporting.
 - Self-deployment now uses a persistent deployer service, so rollback authority survives bot replacement and clean published commits can be redeployed after interrupted attempts.
@@ -24,7 +24,7 @@ Last updated: 2026-07-27
 
 ## Last stopping point
 
-- Persistent-controller deployment hardening and the Cornelio identity change are deployed.
+- Exact-message 👍 approval and 👎 rejection are published and deployed; the rebuilt bot and persistent deployer are healthy.
 
 ## Next steps
 
@@ -45,6 +45,6 @@ Last updated: 2026-07-27
 
 ## Validation
 
-- Current validation: 69 unit tests pass via `python -m pytest` in a temporary environment, including reaction authorization, exact-message matching, reaction handler registration, and polling configuration. Python compilation and `git diff --check` also pass.
+- Current validation: 73 unit tests pass via `python -m pytest` in a temporary environment, including reaction authorization, exact-message matching, reaction handler registration, and polling configuration. Python compilation and `git diff --check` also pass.
 - Earlier live deployment validation covered a queued deployment and controlled startup-failure rollback; the bot and deployer containers were healthy at that stopping point.
-- No live Docker build, bot launch, Telegram reaction exchange, model call, deployment, or push has been validated for the reaction change.
+- The reaction change was pushed to `origin/main`; the bot image built successfully, the replacement bot reached Docker health, and the persistent deployer remained running. A live Telegram reaction exchange and model call have not been exercised.
