@@ -67,6 +67,25 @@ class TelegramWorkerTests(unittest.TestCase):
         self.assertEqual(result, [True])
         self.assertIsNone(session.pending_approval)
 
+    def test_pending_approval_reaction_must_target_its_prompt(self) -> None:
+        session = ConversationSession()
+        notified = threading.Event()
+        result: list[bool] = []
+
+        def wait_for_approval() -> None:
+            result.append(session.request_approval("write_file", "write notes.txt", lambda request: notified.set()))
+
+        thread = threading.Thread(target=wait_for_approval)
+        thread.start()
+        self.assertTrue(notified.wait(timeout=1))
+        request = session.pending_approval
+        assert request is not None
+        request.bind_message(123, 456)
+        self.assertFalse(session.resolve_reaction_approval(123, 999, True))
+        self.assertTrue(session.resolve_reaction_approval(123, 456, True))
+        thread.join(timeout=1)
+        self.assertEqual(result, [True])
+
     def test_pending_approval_can_resolve_without_id(self) -> None:
         session = ConversationSession()
         notified = threading.Event()

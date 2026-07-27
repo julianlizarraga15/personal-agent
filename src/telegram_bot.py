@@ -60,6 +60,14 @@ class PendingApproval:
     summary: str
     event: threading.Event = field(default_factory=threading.Event, repr=False)
     approved: bool | None = None
+    approval_chat_id: int | None = None
+    approval_message_id: int | None = None
+
+    def bind_message(self, chat_id: int, message_id: int) -> None:
+        """Associate this request with the Telegram message it asks to approve."""
+
+        self.approval_chat_id = chat_id
+        self.approval_message_id = message_id
 
     def resolve(self, approved: bool) -> None:
         if not self.event.is_set():
@@ -136,6 +144,21 @@ class ConversationSession:
                 return False
             request.resolve(approved)
             LOGGER.info("approval resolved request_id=%s outcome=%s", request.request_id, "approved" if approved else "rejected")
+            return True
+
+    def resolve_reaction_approval(self, chat_id: int, message_id: int, approved: bool) -> bool:
+        """Resolve only an approval reaction placed on the matching prompt."""
+
+        with self.approval_lock:
+            request = self.pending_approval
+            if (
+                request is None
+                or request.approval_chat_id != chat_id
+                or request.approval_message_id != message_id
+            ):
+                return False
+            request.resolve(approved)
+            LOGGER.info("approval resolved by reaction request_id=%s outcome=%s", request.request_id, "approved" if approved else "rejected")
             return True
 
     def cancel_approval(self) -> None:
@@ -330,6 +353,27 @@ async def reject_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _resolve_approval(update, context, False)
 
 
+def _has_thumbs_up(reactions: object) -> bool:
+    """Return whether Telegram's updated reaction list contains 👍."""
+
+    return any(getattr(reaction, "emoji", None) == "👍" for reaction in reactions or ())
+
+
+async def approve_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Approve a pending action when the owner reacts 👍 to its prompt."""
+
+    del context
+    reaction = update.message_reaction
+    if reaction is None or reaction.user is None or not _is_allowed(reaction.user.id):
+        return
+    if not _has_thumbs_up(reaction.new_reaction):
+        return
+    session = SESSIONS.get(reaction.user.id)
+    if session is None or not session.resolve_reaction_approval(reaction.chat.id, reaction.message_id, True):
+        return
+    await update.get_bot().send_message(chat_id=reaction.chat.id, text="Approved. I’ll continue.")
+
+
 async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     user = update.effective_user
@@ -480,11 +524,12 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             f"Approval required ({request.request_id})\n"
             f"action: {request.action}\n"
             f"details: {request.summary}\n"
-            f"Reply /approve {request.request_id} or /reject {request.request_id}."
+            f"React 👍 to this message to approve, or reply /approve {request.request_id} or /reject {request.request_id}."
         )
         delivery = asyncio.run_coroutine_threadsafe(message.reply_text(prompt), loop)  # type: ignore[attr-defined]
         try:
-            delivery.result(timeout=30)
+            approval_message = delivery.result(timeout=30)
+            request.bind_message(approval_message.chat_id, approval_message.message_id)
             LOGGER.info("turn approval_prompt_delivered turn_id=%s request_id=%s", turn_id, request.request_id)
         except FutureTimeoutError:
             session.approval_delivery_failed = True
@@ -590,10 +635,10 @@ async def report_startup_deployment(application: object) -> None:
 
 
 def build_application(environ: dict[str, str] | None = None) -> Application:
-    from telegram.ext import Application, CommandHandler
+    from telegram.ext import Application, CommandHandler, MessageReactionHandler
     from telegram.ext import MessageHandler, filters
 
-    token, _, _ = required_settings(environ)
+    token, allowed_id, _ = required_settings(environ)
     application = Application.builder().token(token).concurrent_updates(True).post_init(report_startup_deployment).build()
     application.add_handler(CommandHandler("run", run_command))
     application.add_handler(CommandHandler("project", select_project))
@@ -601,6 +646,7 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     application.add_handler(CommandHandler("stop", stop_session))
     application.add_handler(CommandHandler("approve", approve_action))
     application.add_handler(CommandHandler("reject", reject_action))
+    application.add_handler(MessageReactionHandler(approve_reaction, user_id=allowed_id))
     application.add_handler(CommandHandler("pending", pending_command))
     application.add_handler(CommandHandler(["help", "start"], help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, conversational_message))
