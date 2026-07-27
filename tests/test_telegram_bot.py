@@ -82,6 +82,25 @@ class TelegramWorkerTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertEqual(result, [True])
 
+    def test_approval_prompt_failure_does_not_reject_pending_action(self) -> None:
+        session = ConversationSession()
+        notified = threading.Event()
+        result: list[bool] = []
+
+        def wait_for_approval() -> None:
+            def failed_notify(request) -> None:
+                notified.set()
+                raise RuntimeError("Telegram delivery failed")
+
+            result.append(session.request_approval("self_deploy", "redeploy", failed_notify))
+
+        thread = threading.Thread(target=wait_for_approval)
+        thread.start()
+        self.assertTrue(notified.wait(timeout=1))
+        self.assertTrue(session.resolve_approval(None, True))
+        thread.join(timeout=1)
+        self.assertEqual(result, [True])
+
     def test_conversation_session_keeps_project_and_context(self) -> None:
         session = ConversationSession(project="https://example.test/repo.git")
         first_prompt = session.prompt_for("Add a health endpoint")

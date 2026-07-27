@@ -345,7 +345,19 @@ def self_deploy(
     LOGGER.info("self_deploy stage=push")
     pushed = subprocess.run(["git", "push", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
     if pushed.returncode:
-        return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": (pushed.stdout + pushed.stderr)[-8000:]})
+        push_output = pushed.stdout + pushed.stderr
+        if not _is_non_fast_forward(push_output):
+            return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": push_output[-8000:]})
+        LOGGER.info("self_deploy stage=push_retry reason=remote_advanced")
+        fetched = subprocess.run(["git", "fetch", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
+        if fetched.returncode:
+            return json.dumps({"stage": "sync", "exit_code": fetched.returncode, "output": (fetched.stdout + fetched.stderr)[-8000:]})
+        rebased = subprocess.run(["git", "rebase", "origin/main"], cwd=project.path, capture_output=True, text=True, timeout=120)
+        if rebased.returncode:
+            return json.dumps({"stage": "rebase", "exit_code": rebased.returncode, "output": (rebased.stdout + rebased.stderr)[-8000:]})
+        pushed = subprocess.run(["git", "push", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
+        if pushed.returncode:
+            return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": (pushed.stdout + pushed.stderr)[-8000:]})
     if not approval_callback("self_deploy_restart", "rebuild the bot image and recreate the Docker Compose bot service"):
         LOGGER.info("self_deploy stopped stage=restart_approval")
         return "changes were committed and pushed; restart was not approved"
@@ -356,6 +368,12 @@ def self_deploy(
     deployed = subprocess.run([helper], cwd=project.path, capture_output=True, text=True, timeout=600)
     LOGGER.info("self_deploy finished stage=restart exit_code=%s", deployed.returncode)
     return json.dumps({"stage": "restart", "exit_code": deployed.returncode, "branch": branch, "output": (deployed.stdout + deployed.stderr)[-8000:]})
+
+
+def _is_non_fast_forward(output: str) -> bool:
+    """Identify a push rejection that can be repaired by rebasing once."""
+    normalized = output.lower()
+    return any(phrase in normalized for phrase in ("fetch first", "non-fast-forward", "rejected"))
 
 
 def _routing_context(session: AgentSession) -> dict[str, Any]:

@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
+from agent import Agent, AgentSession, Computer, ProjectContext, _is_non_fast_forward, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
 from router import RouteDecision, Router
 
 
@@ -75,6 +75,11 @@ class ComputerToolTests(unittest.TestCase):
     def test_self_deploy_can_retry_after_no_changes(self) -> None:
         self.assertTrue(_self_deploy_retryable("self-deployment found no uncommitted changes; continue editing before retrying deployment"))
         self.assertFalse(_self_deploy_retryable('{"stage":"push","exit_code":1}'))
+
+    def test_non_fast_forward_pushes_are_retryable(self) -> None:
+        self.assertTrue(_is_non_fast_forward("! [rejected] main -> main (fetch first)"))
+        self.assertTrue(_is_non_fast_forward("non-fast-forward"))
+        self.assertFalse(_is_non_fast_forward("Permission denied (publickey)."))
 
     def test_self_deploy_callback_is_available_only_as_a_tool_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

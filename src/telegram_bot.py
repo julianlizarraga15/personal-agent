@@ -107,7 +107,12 @@ class ConversationSession:
             self.pending_approval = request
         try:
             LOGGER.info("approval waiting request_id=%s action=%s timeout_seconds=300", request.request_id, action)
-            notify(request)
+            try:
+                notify(request)
+            except Exception:
+                # A delivery failure must not silently reject the action. The
+                # owner can still resolve the pending request with /approve.
+                LOGGER.exception("approval prompt failed request_id=%s action=%s", request.request_id, action)
             resolved = request.event.wait(timeout=300)
             approved = resolved and request.approved is True
             LOGGER.info(
@@ -362,6 +367,15 @@ async def conversational_message(update: Update, context: ContextTypes.DEFAULT_T
     if user is None or message is None or not _is_allowed(user.id):
         return
     session = session_for(user.id)
+    if session.running:
+        pending = session.pending_approval
+        if pending is not None:
+            await message.reply_text(
+                f"An approval is pending ({pending.request_id}). Reply /approve {pending.request_id} or /reject {pending.request_id}."
+            )
+        else:
+            await message.reply_text("I’m still working on the previous request.")
+        return
     if session.project is None:
         await _run_agent(message, session, message.text or "", user.id)
         return
@@ -441,10 +455,10 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             LOGGER.info("turn approval_prompt_delivered turn_id=%s request_id=%s", turn_id, request.request_id)
         except FutureTimeoutError:
             LOGGER.error("turn approval_prompt_failed turn_id=%s request_id=%s reason=delivery_timeout", turn_id, request.request_id)
-            request.resolve(False)
+            # Keep the request pending. A slow Telegram API response is not a
+            # rejection, and /approve without an ID remains available.
         except Exception:
             LOGGER.exception("turn approval_prompt_failed turn_id=%s request_id=%s", turn_id, request.request_id)
-            request.resolve(False)
 
     def request_approval(action: str, summary: str) -> bool:
         return session.request_approval(action, summary, notify)
