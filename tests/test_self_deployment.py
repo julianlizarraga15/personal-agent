@@ -72,6 +72,57 @@ class SelfDeploymentTests(unittest.TestCase):
         result = self._run(self.repository)
         self.assertEqual(result["status"], "push_conflict")
 
+    def test_fetch_authentication_failure_stops_before_tests_or_queue(self) -> None:
+        original = self_deployment._command
+
+        def command(args, repo, timeout=120):
+            if args[:3] == ["git", "fetch", "origin"]:
+                return subprocess.CompletedProcess(args, 128, "", "Permission denied (publickey)")
+            return original(args, repo, timeout)
+
+        with patch.object(self_deployment, "_command", side_effect=command), patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": str(self.state_dir)}):
+            result = json.loads(self_deployment.publish_and_queue(self.repository, lambda *_: True))
+        self.assertEqual(result["stage"], "sync")
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(DeploymentQueue(self.state_dir).request_path.exists())
+
+    def test_push_authentication_failure_does_not_queue(self) -> None:
+        (self.repository / "README.md").write_text("changed\n")
+        original = self_deployment._command
+
+        def command(args, repo, timeout=120):
+            if args[:3] == ["python", "-m", "pytest"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[:3] == ["git", "push", "origin"]:
+                return subprocess.CompletedProcess(args, 128, "", "Permission denied (publickey)")
+            return original(args, repo, timeout)
+
+        with patch.object(self_deployment, "_command", side_effect=command), patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": str(self.state_dir)}):
+            result = json.loads(self_deployment.publish_and_queue(self.repository, lambda *_: True))
+        self.assertEqual(result["stage"], "push")
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(DeploymentQueue(self.state_dir).request_path.exists())
+
+    def test_non_fast_forward_push_is_retried_once(self) -> None:
+        (self.repository / "README.md").write_text("changed\n")
+        original = self_deployment._command
+        push_attempts = 0
+
+        def command(args, repo, timeout=120):
+            nonlocal push_attempts
+            if args[:3] == ["python", "-m", "pytest"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[:3] == ["git", "push", "origin"]:
+                push_attempts += 1
+                if push_attempts == 1:
+                    return subprocess.CompletedProcess(args, 1, "", "non-fast-forward")
+            return original(args, repo, timeout)
+
+        with patch.object(self_deployment, "_command", side_effect=command), patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": str(self.state_dir)}):
+            result = json.loads(self_deployment.publish_and_queue(self.repository, lambda *_: True))
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(push_attempts, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

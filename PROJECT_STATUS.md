@@ -45,7 +45,7 @@ Last updated: 2026-07-27
 
 ## Validation
 
-- Current validation: 51 unit tests, Python compilation, `docker compose config`, and `git diff --check` pass. A live queued deployment and a controlled startup-failure rollback both completed successfully; bot and deployer containers are healthy.
+- Current validation: 63 unit tests, Python compilation, `docker compose config`, and `git diff --check` pass. Coverage includes controller restart, Docker/build/recreate/rollback failures, storage failure, corrupt state, Git network/auth conflicts, and Telegram delivery retry. A live queued deployment and controlled startup-failure rollback both completed successfully; bot and deployer containers are healthy.
 - The required literal `python -m pytest` validation is unavailable because `python` is not installed in the environment.
 - `python3 -m pytest` is also unavailable because pytest is not installed.
 - Python compilation and `docker compose config` pass with placeholder validation environment values.

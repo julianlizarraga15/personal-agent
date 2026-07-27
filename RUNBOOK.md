@@ -31,6 +31,7 @@
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the project exists under `workspace/`, the OpenAI API key is configured, and the bot image has been rebuilt after dependency changes.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
+- State storage full/unavailable: free space or restore the mount, then restart the deployer. It retains the active request when failure state cannot be persisted and resumes it after restart.
 
 ## Stop and recover
 

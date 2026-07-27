@@ -15,6 +15,7 @@ LOGGER = logging.getLogger(__name__)
 
 def run_once(queue: DeploymentQueue) -> bool:
     request = None
+    release_request = True
     try:
         with deployment_lock(queue.state_dir):
             request = queue.claim()
@@ -34,9 +35,16 @@ def run_once(queue: DeploymentQueue) -> bool:
         return False
     except Exception as exc:
         LOGGER.exception("deployment controller failed deployment_id=%s", request.get("deployment_id") if request else "unknown")
-        DeploymentManifest(queue.state_dir).transition("failed", error=str(exc))
+        try:
+            DeploymentManifest(queue.state_dir).transition("failed", error=str(exc))
+        except OSError:
+            # Preserve the active request if durable state cannot be written.
+            # Container restart can then resume it after storage recovers.
+            release_request = False
+            LOGGER.exception("deployment failure could not be persisted; retaining active request")
+            raise
     finally:
-        if request is not None:
+        if request is not None and release_request:
             queue.finish()
     return request is not None
 

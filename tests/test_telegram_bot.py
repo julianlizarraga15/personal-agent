@@ -189,6 +189,29 @@ class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("reported_at", state)
         self.assertIn("build broke", messages[0])
 
+    async def test_notification_delivery_failure_remains_pending_and_retries(self) -> None:
+        messages = []
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": directory}):
+            from deployment import DeploymentManifest
+
+            manifest = DeploymentManifest(directory)
+            manifest.write(status="awaiting_report", deployment_id="d1", commit="abc")
+
+            async def fail(_message):
+                raise RuntimeError("Telegram unavailable")
+
+            await _monitor_deployment(fail, timeout_seconds=1)
+            state = manifest.read()
+            self.assertEqual(state["status"], "awaiting_report")
+            self.assertNotIn("reported_at", state)
+
+            async def succeed(message):
+                messages.append(message)
+
+            await _monitor_deployment(succeed, timeout_seconds=1)
+            self.assertEqual(manifest.read()["status"], "healthy")
+        self.assertEqual(len(messages), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
