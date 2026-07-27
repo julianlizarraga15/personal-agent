@@ -583,7 +583,7 @@ async def _monitor_deployment(send: Callable[[str], object], timeout_seconds: in
 
 async def report_startup_deployment(application: object) -> None:
     Path("/tmp/personal-agent-ready").touch()
-    application.create_task(  # type: ignore[attr-defined]
+    asyncio.create_task(
         _monitor_deployment(lambda text: application.bot.send_message(chat_id=int(os.environ["TELEGRAM_ALLOWED_USER_ID"]), text=text)),  # type: ignore[attr-defined]
         name="deployment-report",
     )
