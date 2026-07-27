@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from html import escape
+from html.parser import HTMLParser
 from io import BytesIO
 import json
 import logging
@@ -16,8 +18,11 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
+import markdown
 from PIL import Image, UnidentifiedImageError
+from telegram.error import BadRequest
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
@@ -54,6 +59,143 @@ AUDIO_MEDIA_TYPES = {
     "audio/wav",
     "audio/webm",
 }
+
+TELEGRAM_INLINE_TAGS = {
+    "b": "b",
+    "strong": "b",
+    "i": "i",
+    "em": "i",
+    "u": "u",
+    "ins": "u",
+    "s": "s",
+    "strike": "s",
+    "del": "s",
+    "code": "code",
+    "pre": "pre",
+    "blockquote": "blockquote",
+}
+
+
+class _TelegramHTMLRenderer(HTMLParser):
+    """Reduce generated Markdown HTML to the subset Telegram accepts."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.open_tags: list[tuple[str, str | None]] = []
+        self.lists: list[dict[str, int | bool]] = []
+
+    def _newline(self, count: int = 1) -> None:
+        current = len(self.parts[-1]) - len(self.parts[-1].rstrip("\n")) if self.parts else 0
+        if current < count:
+            self.parts.append("\n" * (count - current))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        output_tag: str | None = None
+        if tag in TELEGRAM_INLINE_TAGS:
+            output_tag = TELEGRAM_INLINE_TAGS[tag]
+            self.parts.append(f"<{output_tag}>")
+        elif tag == "a":
+            href = dict(attrs).get("href") or ""
+            if _safe_telegram_link(href):
+                output_tag = "a"
+                self.parts.append(f'<a href="{escape(href, quote=True)}">')
+        elif tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            if self.parts:
+                self._newline()
+            output_tag = "b"
+            self.parts.append("<b>")
+        elif tag in {"ul", "ol"}:
+            if self.parts:
+                self._newline()
+            start = dict(attrs).get("start")
+            try:
+                counter = int(start) if tag == "ol" and start is not None else 1
+            except ValueError:
+                counter = 1
+            self.lists.append({"ordered": tag == "ol", "counter": counter})
+        elif tag == "li":
+            self._newline()
+            prefix = "- "
+            if self.lists and self.lists[-1]["ordered"]:
+                prefix = f"{self.lists[-1]['counter']}. "
+                self.lists[-1]["counter"] = int(self.lists[-1]["counter"]) + 1
+            self.parts.append("  " * max(len(self.lists) - 1, 0) + prefix)
+        elif tag == "hr":
+            self._newline()
+            self.parts.append("────────")
+            self._newline()
+        elif tag == "br":
+            self._newline()
+        elif tag == "img":
+            alt = dict(attrs).get("alt")
+            if alt:
+                self.parts.append(escape(alt))
+        self.open_tags.append((tag, output_tag))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        output_tag: str | None = None
+        for index in range(len(self.open_tags) - 1, -1, -1):
+            source_tag, candidate = self.open_tags[index]
+            if source_tag == tag:
+                output_tag = candidate
+                del self.open_tags[index]
+                break
+        if output_tag is not None:
+            self.parts.append(f"</{output_tag}>")
+        if tag in {"p", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._newline(2 if tag == "p" and not self.lists else 1)
+        elif tag == "li":
+            self._newline()
+        elif tag in {"ul", "ol"}:
+            if self.lists:
+                self.lists.pop()
+            self._newline(2 if not self.lists else 1)
+
+    def handle_data(self, data: str) -> None:
+        in_code = any(source_tag in {"pre", "code"} for source_tag, _ in self.open_tags)
+        if not in_code and data.isspace() and "\n" in data:
+            return
+        self.parts.append(escape(data))
+
+    def rendered(self) -> str:
+        return "".join(self.parts).strip()
+
+
+def _safe_telegram_link(href: str) -> bool:
+    """Allow only link schemes understood by Telegram clients."""
+
+    parsed = urlsplit(href)
+    return parsed.scheme.lower() in {"http", "https", "tg"}
+
+
+def _telegram_html(text: str) -> str:
+    """Render ordinary agent Markdown as sanitized Telegram-compatible HTML."""
+
+    rendered_markdown = markdown.markdown(text, extensions=["fenced_code", "sane_lists"])
+    renderer = _TelegramHTMLRenderer()
+    renderer.feed(rendered_markdown)
+    renderer.close()
+    return renderer.rendered()
+
+
+async def _reply_agent_response(message: object, text: str) -> None:
+    """Deliver a formatted agent answer, falling back if Telegram rejects it."""
+
+    try:
+        await message.reply_text(  # type: ignore[attr-defined]
+            _telegram_html(text),
+            parse_mode="HTML",
+        )
+    except BadRequest:
+        LOGGER.warning("formatted agent response rejected by Telegram; retrying as plain text")
+        await message.reply_text(text)  # type: ignore[attr-defined]
 
 
 class WorkerExecutionError(RuntimeError):
@@ -881,7 +1023,7 @@ async def _run_agent(
                 await message.reply_text(f"Deployment {queued['deployment_id']} queued for commit {queued['commit'][:12]}.")  # type: ignore[attr-defined]
                 asyncio.create_task(_monitor_deployment(message.reply_text))  # type: ignore[attr-defined]
             else:
-                await message.reply_text(response or "Done.")  # type: ignore[attr-defined]
+                await _reply_agent_response(message, response or "Done.")
         LOGGER.info("turn finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
     except Exception as exc:
         LOGGER.exception("turn failed turn_id=%s elapsed_seconds=%.1f error_type=%s", turn_id, time.monotonic() - started, type(exc).__name__)

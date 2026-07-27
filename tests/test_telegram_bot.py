@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image
 
 import telegram_bot
-from telegram_bot import DEFAULT_IMAGE_PROMPT, ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, _validate_image, required_settings, run_docker_worker, workspace_project_path
+from telegram_bot import DEFAULT_IMAGE_PROMPT, ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, _reply_agent_response, _telegram_html, _validate_image, required_settings, run_docker_worker, workspace_project_path
 from usage import ModelUsage
 
 
@@ -35,6 +35,36 @@ class FakeStream:
 
 
 class TelegramWorkerTests(unittest.TestCase):
+    def test_agent_markdown_is_rendered_as_telegram_html(self) -> None:
+        source = (
+            "# Match data\n\n"
+            "- **[Sportradar](https://example.test/data?year=2026&kind=event)** — "
+            "includes `water_break_start`.\n"
+            "- *FIFA* and _StatsBomb_\n\n"
+            "> Check the methodology.\n\n"
+            "```python\nprint(\"<ready>\")\n```"
+        )
+
+        rendered = _telegram_html(source)
+
+        self.assertIn("<b>Match data</b>", rendered)
+        self.assertIn('<b><a href="https://example.test/data?year=2026&amp;kind=event">Sportradar</a></b>', rendered)
+        self.assertIn("<code>water_break_start</code>", rendered)
+        self.assertIn("<i>FIFA</i> and <i>StatsBomb</i>", rendered)
+        self.assertIn("<blockquote>", rendered)
+        self.assertIn("Check the methodology.", rendered)
+        self.assertIn("<pre><code>print(&quot;&lt;ready&gt;&quot;)", rendered)
+        self.assertNotIn("**", rendered)
+        self.assertNotIn("\n\n\n", rendered)
+
+    def test_agent_markdown_drops_unsupported_html_and_unsafe_links(self) -> None:
+        rendered = _telegram_html('<script>alert("hi")</script> [unsafe](javascript:alert(1))')
+
+        self.assertNotIn("<script>", rendered)
+        self.assertNotIn("<a ", rendered)
+        self.assertIn('alert(&quot;hi&quot;)', rendered)
+        self.assertIn("unsafe", rendered)
+
     def test_fresh_conversation_uses_configured_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"AGENT_WORKSPACE_ROOT": directory}, clear=False
@@ -192,6 +222,30 @@ class TelegramWorkerTests(unittest.TestCase):
     def test_deployment_report_distinguishes_success_and_rollback(self) -> None:
         self.assertIn("completed successfully", _deployment_report({"status": "awaiting_report", "deployment_id": "d1", "commit": "abc"}))
         self.assertIn("rollback completed", _deployment_report({"status": "rollback_completed", "deployment_id": "d1"}))
+
+
+class AgentResponseFormattingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_formatted_response_uses_html_parse_mode(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+
+        await _reply_agent_response(message, "A **bold** answer")
+
+        message.reply_text.assert_awaited_once_with(
+            "A <b>bold</b> answer",
+            parse_mode="HTML",
+        )
+
+    async def test_formatted_response_falls_back_to_plain_text_on_parse_error(self) -> None:
+        message = SimpleNamespace(
+            reply_text=AsyncMock(side_effect=[telegram_bot.BadRequest("can't parse entities"), None])
+        )
+
+        await _reply_agent_response(message, "A **bold** answer")
+
+        self.assertEqual(message.reply_text.await_count, 2)
+        self.assertEqual(message.reply_text.await_args_list[0].kwargs["parse_mode"], "HTML")
+        self.assertEqual(message.reply_text.await_args_list[1].args[0], "A **bold** answer")
+        self.assertNotIn("parse_mode", message.reply_text.await_args_list[1].kwargs)
 
 
 class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):
@@ -577,6 +631,7 @@ class AudioTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("The server returns error 500.", task)
         self.assertNotIn(b"OggSdata", repr(session.agent.input_items).encode())
         self.assertEqual([call.args[0] for call in message.reply_text.await_args_list], ["Transcribing…", "Working...", "Fixed it"])
+        self.assertEqual(message.reply_text.await_args_list[-1].kwargs["parse_mode"], "HTML")
         self.assertIn("gpt-4o-mini-transcribe", session.agent.usage.by_model)
 
     async def test_captionless_audio_uses_transcript_directly(self) -> None:
