@@ -420,6 +420,18 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await message.reply_text("\n".join(lines) if lines else "No approval or deployment is pending.")
 
 
+async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Report model tokens and estimated API cost for this conversation."""
+
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    session = SESSIONS.get(user.id)
+    await message.reply_text(session.agent.usage.format() if session is not None else "No model usage in the current session.")
+
+
 async def _resolve_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, approved: bool) -> None:
     user = update.effective_user
     message = update.effective_message
@@ -445,7 +457,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await message.reply_text(
         "Chat normally to work in the configured computer workspace, or use /project <directory-name> to narrow the context.\n"
-        "/new starts over, /stop forgets the session, /pending shows deployment state, and /run <url> <task> runs one task.\n"
+        "/new starts over, /stop forgets the session, /usage shows model cost, /pending shows deployment state, and /run <url> <task> runs one task.\n"
         "For requested edits or Git actions, react 👍/👎 to the approval prompt or use /approve <id> or /reject <id>."
     )
 
@@ -667,6 +679,7 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     application.add_handler(CommandHandler("approve", approve_action))
     application.add_handler(CommandHandler("reject", reject_action))
     application.add_handler(CommandHandler("pending", pending_command))
+    application.add_handler(CommandHandler("usage", usage_command))
     application.add_handler(CommandHandler(["help", "start"], help_command))
     application.add_handler(
         MessageReactionHandler(

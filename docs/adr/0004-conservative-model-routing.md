@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-23
 
+This decision is extended by ADR 0005, which separates economy and computer-work tiers and adds bounded context and usage accounting.
+
 ## Context
 
 Most Telegram turns do not need repository tools or the full reasoning budget of the main agent. Calling the large model for every message increases cost and can add latency.

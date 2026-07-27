@@ -9,6 +9,7 @@ from pathlib import Path
 
 import telegram_bot
 from telegram_bot import ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, required_settings, run_docker_worker, workspace_project_path
+from usage import ModelUsage
 
 
 class FakeProcess:
@@ -288,6 +289,36 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(request.approved)
         context.bot.send_message.assert_awaited_once_with(chat_id=42, text="Approved. I’ll continue.")
 
+    async def test_usage_command_reports_current_session_totals(self) -> None:
+        session = ConversationSession()
+        session.agent.usage.add(ModelUsage("gpt-5.6-luna", "answer", input_tokens=100, output_tokens=20))
+        telegram_bot.SESSIONS[42] = session
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}):
+            await telegram_bot.usage_command(update, SimpleNamespace())
+
+        report = message.reply_text.await_args.args[0]
+        self.assertIn("Usage for this session", report)
+        self.assertIn("gpt-5.6-luna", report)
+
+    async def test_project_selection_resets_usage_totals(self) -> None:
+        session = ConversationSession()
+        session.agent.usage.add(ModelUsage("gpt-5.6-luna", "answer", input_tokens=100))
+        telegram_bot.SESSIONS[42] = session
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"TELEGRAM_ALLOWED_USER_ID": "42", "AGENT_WORKSPACE_ROOT": directory},
+        ):
+            (Path(directory) / "demo").mkdir()
+            await telegram_bot.select_project(update, SimpleNamespace(args=["demo"]))
+
+        self.assertEqual(telegram_bot.SESSIONS[42].agent.usage.format(), "No model usage in the current session.")
+
     async def test_thumbs_down_rejects_matching_prompt_and_confirms(self) -> None:
         session = ConversationSession()
         request = PendingApproval("approval-1", "write_file", "write notes.txt")
@@ -334,7 +365,7 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         application.run_polling.assert_called_once_with(allowed_updates=("message", "message_reaction"))
 
     def test_application_registers_reaction_handler(self) -> None:
-        from telegram.ext import MessageReactionHandler
+        from telegram.ext import CommandHandler, MessageReactionHandler
 
         application = telegram_bot.build_application(
             {"TELEGRAM_BOT_TOKEN": "123:token", "TELEGRAM_ALLOWED_USER_ID": "42"}
@@ -344,6 +375,8 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         reaction_handlers = [handler for handler in handlers if isinstance(handler, MessageReactionHandler)]
         self.assertEqual(len(reaction_handlers), 1)
         self.assertIs(reaction_handlers[0].callback, telegram_bot.approval_reaction)
+        command_callbacks = {handler.callback for handler in handlers if isinstance(handler, CommandHandler)}
+        self.assertIn(telegram_bot.usage_command, command_callbacks)
 
 
 if __name__ == "__main__":

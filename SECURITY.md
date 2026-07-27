@@ -8,12 +8,12 @@ This project runs an agent that can modify and push code, so deployment security
 - The worker publishes to the checked-out default branch (`main` or `master`) after the task and tests complete.
 - The Telegram bot accepts commands only from the numeric `TELEGRAM_ALLOWED_USER_ID`.
 - The model receives only explicitly-defined tools, and file paths are constrained to the mounted workspace.
-- The small routing model receives no tools or file contents. It is conservative and falls back to the large agent for ambiguity or routing failures; its decision never grants additional permissions.
+- The small routing model receives no tools or file contents. It conservatively chooses a model tier and minimum capability set, and falls back to the large agent with available capabilities for ambiguity or routing failures; its decision never bypasses path constraints or approval checks.
 - The hosted web-search tool is the only external-information capability; web results are untrusted input and do not grant the model access to local secrets or arbitrary local network actions.
 - File writes and dedicated Git commit/push operations require explicit Telegram approval with a short-lived request ID. Reaction approvals are accepted only from the configured owner and only on the Telegram message bound to that exact pending request; command approval remains available. An explicit self-deployment request uses one broad approval for that complete operation, including edits, tests, commit, push, rebuild, and restart.
 - Destructive shell commands and shell-form Git publication remain blocked; Git publication uses the dedicated approval flow.
 - Secrets belong in the runtime environment or a local `.env` file. `.env` is ignored by Git and must never be committed.
-- Operational logs are written to container stdout and intentionally exclude prompts, message text, file contents, command output, and credentials. Restrict access to Docker logs because paths, tool names, project names, and numeric Telegram user IDs may still be present.
+- Operational logs are written to container stdout and intentionally exclude prompts, message text, file contents, command output, and credentials. Token counts, cache activity, web-search counts, and estimated cost are safe operational metadata. Restrict access to Docker logs because paths, tool names, project names, and numeric Telegram user IDs may still be present.
 - Self-deployment writes only deployment ID, commit, image references, timestamps, and machine-readable status to `/workspace/.personal-agent-state`; an automatically released file lock prevents concurrent deployments. A dedicated deployer retains Docker-socket authority across bot replacement.
 - Never inspect, read, print, or expose the contents of `.env` under any circumstances. Use `.env.example` for configuration guidance.
 - Test commands are detected from repository metadata and run inside the worker container.
