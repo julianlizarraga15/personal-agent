@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from io import BytesIO
@@ -26,7 +27,7 @@ from telegram.error import BadRequest
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
-from usage import ModelUsage
+from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -391,8 +392,23 @@ def workspace_project_path(workspace: Path, requested_name: str) -> Path:
 SESSIONS: dict[int, ConversationSession] = {}
 
 
+def configured_usage_store() -> UsageStore:
+    state_dir = Path(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state"))
+    return UsageStore(os.environ.get("USAGE_DB_PATH", str(state_dir / "usage.sqlite3")))
+
+
+def tracked_agent_session(user_id: int, project: ProjectContext | None = None) -> AgentSession:
+    store = configured_usage_store()
+    usage = SessionUsage(recorder=lambda item: store.record(user_id, item))
+    return AgentSession(project or default_project_context(), usage=usage)
+
+
 def session_for(user_id: int) -> ConversationSession:
-    return SESSIONS.setdefault(user_id, ConversationSession())
+    session = SESSIONS.get(user_id)
+    if session is None:
+        session = ConversationSession(agent=tracked_agent_session(user_id))
+        SESSIONS[user_id] = session
+    return session
 
 
 def run_docker_worker(
@@ -515,7 +531,7 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session.project = context.args[0]
     session.branch = None
     session.history = []
-    session.agent = AgentSession(ProjectContext(context.args[0], project_path))
+    session.agent = tracked_agent_session(user.id, ProjectContext(context.args[0], project_path))
     await message.reply_text("Project selected. Tell me what you want changed.")
 
 
@@ -604,7 +620,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Report model tokens and estimated API cost for this conversation."""
+    """Report session, daily, and durable model usage totals."""
 
     del context
     user = update.effective_user
@@ -612,7 +628,27 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if user is None or message is None or not _is_allowed(user.id):
         return
     session = SESSIONS.get(user.id)
-    await message.reply_text(session.agent.usage.format() if session is not None else "No model usage in the current session.")
+    current = session.agent.usage if session is not None else SessionUsage()
+    sections = [current.format("Current session", include_pricing=False)]
+    try:
+        now = datetime.now(timezone.utc)
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        store = configured_usage_store()
+        sections.extend(
+            [
+                store.summary(user.id, since=today).format("Today (UTC)", include_pricing=False),
+                store.summary(user.id).format("All recorded usage", include_pricing=False),
+            ]
+        )
+    except Exception:
+        LOGGER.exception("durable usage report failed user_id=%s", user.id)
+        sections.append("Durable usage\nUnavailable; current-session totals are still shown above.")
+    if current.persistence_errors:
+        sections.append(
+            f"Warning: {current.persistence_errors} request(s) in this session could not be saved durably."
+        )
+    sections.append(f"Pricing snapshot: {PRICING_AS_OF}; provider billing is authoritative.")
+    await message.reply_text("\n\n".join(sections))
 
 
 async def _resolve_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, approved: bool) -> None:

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime, timezone
+import logging
+import os
+from pathlib import Path
+import sqlite3
 import threading
 from dataclasses import dataclass, field
 from typing import Any
 
 
+LOGGER = logging.getLogger(__name__)
 PRICING_AS_OF = "2026-07-27"
 WEB_SEARCH_USD_PER_CALL = 0.01
 
@@ -120,17 +127,201 @@ class UsageTotals:
         return self.input_tokens + self.output_tokens
 
 
+def _format_usage(
+    by_model: dict[str, UsageTotals],
+    heading: str,
+    *,
+    warning_turns: int = 0,
+    include_pricing: bool = True,
+    empty_message: str = "No model usage recorded.",
+) -> str:
+    if not by_model:
+        return f"{heading}\n{empty_message}" if heading else empty_message
+    totals = UsageTotals()
+    for item in by_model.values():
+        totals.requests += item.requests
+        totals.input_tokens += item.input_tokens
+        totals.cached_input_tokens += item.cached_input_tokens
+        totals.cache_write_tokens += item.cache_write_tokens
+        totals.output_tokens += item.output_tokens
+        totals.reasoning_tokens += item.reasoning_tokens
+        totals.web_search_calls += item.web_search_calls
+        totals.estimated_cost_usd += item.estimated_cost_usd
+        totals.has_unknown_pricing = totals.has_unknown_pricing or item.has_unknown_pricing
+    estimate = f"${totals.estimated_cost_usd:.6f}" if totals.estimated_cost_usd < 0.01 else f"${totals.estimated_cost_usd:.4f}"
+    if totals.has_unknown_pricing:
+        estimate += " plus usage with unknown pricing"
+    lines = [
+        heading,
+        f"requests: {totals.requests}",
+        f"input tokens: {totals.input_tokens:,} (cached {totals.cached_input_tokens:,}; cache writes {totals.cache_write_tokens:,})",
+        f"output tokens: {totals.output_tokens:,} (reasoning {totals.reasoning_tokens:,})",
+        f"web searches: {totals.web_search_calls}",
+        f"estimated cost: {estimate}",
+        "models: " + ", ".join(f"{model} ({item.requests})" for model, item in sorted(by_model.items())),
+    ]
+    if warning_turns:
+        lines.append(f"high-usage turn warnings: {warning_turns}")
+    if include_pricing:
+        lines.append(f"pricing snapshot: {PRICING_AS_OF}")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class UsageSnapshot:
+    """Aggregated durable usage for a requested time window."""
+
+    by_model: dict[str, UsageTotals]
+
+    def format(self, heading: str, *, include_pricing: bool = True) -> str:
+        return _format_usage(self.by_model, heading, include_pricing=include_pricing)
+
+
+class UsageStore:
+    """Append-only SQLite ledger for model usage metadata."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+        self._schema_lock = threading.Lock()
+        self._schema_ready = False
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path, timeout=5)
+        connection.execute("PRAGMA busy_timeout = 5000")
+        return connection
+
+    def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS usage_events (
+                        id INTEGER PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        phase TEXT NOT NULL,
+                        input_tokens INTEGER NOT NULL,
+                        cached_input_tokens INTEGER NOT NULL,
+                        cache_write_tokens INTEGER NOT NULL,
+                        output_tokens INTEGER NOT NULL,
+                        reasoning_tokens INTEGER NOT NULL,
+                        web_search_calls INTEGER NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS usage_events_user_time ON usage_events(user_id, recorded_at)"
+                )
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                LOGGER.warning("usage database permissions could not be restricted path=%s", self.path)
+            self._schema_ready = True
+
+    def record(self, user_id: int, usage: ModelUsage, *, recorded_at: datetime | None = None) -> None:
+        self._ensure_schema()
+        timestamp = recorded_at or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            raise ValueError("usage timestamp must include a timezone")
+        timestamp_text = timestamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO usage_events (
+                    user_id, recorded_at, model, phase, input_tokens,
+                    cached_input_tokens, cache_write_tokens, output_tokens,
+                    reasoning_tokens, web_search_calls
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    timestamp_text,
+                    usage.model,
+                    usage.phase,
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    usage.cache_write_tokens,
+                    usage.output_tokens,
+                    usage.reasoning_tokens,
+                    usage.web_search_calls,
+                ),
+            )
+
+    def summary(self, user_id: int, *, since: datetime | None = None) -> UsageSnapshot:
+        self._ensure_schema()
+        parameters: list[Any] = [user_id]
+        where = "user_id = ?"
+        if since is not None:
+            if since.tzinfo is None:
+                raise ValueError("usage summary boundary must include a timezone")
+            where += " AND recorded_at >= ?"
+            parameters.append(since.astimezone(timezone.utc).isoformat(timespec="microseconds"))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT model, COUNT(*), SUM(input_tokens), SUM(cached_input_tokens),
+                       SUM(cache_write_tokens), SUM(output_tokens), SUM(reasoning_tokens),
+                       SUM(web_search_calls)
+                FROM usage_events
+                WHERE {where}
+                GROUP BY model
+                ORDER BY model
+                """,
+                parameters,
+            ).fetchall()
+        by_model: dict[str, UsageTotals] = {}
+        for model, requests, input_tokens, cached_tokens, cache_writes, output_tokens, reasoning_tokens, searches in rows:
+            combined = ModelUsage(
+                str(model),
+                "aggregate",
+                input_tokens=int(input_tokens),
+                cached_input_tokens=int(cached_tokens),
+                cache_write_tokens=int(cache_writes),
+                output_tokens=int(output_tokens),
+                reasoning_tokens=int(reasoning_tokens),
+                web_search_calls=int(searches),
+            )
+            cost = combined.estimated_cost_usd
+            by_model[str(model)] = UsageTotals(
+                requests=int(requests),
+                input_tokens=combined.input_tokens,
+                cached_input_tokens=combined.cached_input_tokens,
+                cache_write_tokens=combined.cache_write_tokens,
+                output_tokens=combined.output_tokens,
+                reasoning_tokens=combined.reasoning_tokens,
+                web_search_calls=combined.web_search_calls,
+                estimated_cost_usd=cost or 0.0,
+                has_unknown_pricing=cost is None,
+            )
+        return UsageSnapshot(by_model)
+
+
 @dataclass
 class SessionUsage:
     """Thread-safe accumulated model usage for one Telegram conversation."""
 
     by_model: dict[str, UsageTotals] = field(default_factory=dict)
     warning_turns: int = 0
+    recorder: Callable[[ModelUsage], None] | None = field(default=None, repr=False)
+    persistence_errors: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add(self, usage: ModelUsage) -> None:
         with self._lock:
             self.by_model.setdefault(usage.model, UsageTotals()).add(usage)
+        if self.recorder is not None:
+            try:
+                self.recorder(usage)
+            except Exception:
+                with self._lock:
+                    self.persistence_errors += 1
+                LOGGER.exception("durable usage record failed model=%s phase=%s", usage.model, usage.phase)
 
     def mark_warning(self) -> None:
         with self._lock:
@@ -140,34 +331,15 @@ class SessionUsage:
         with self._lock:
             return sum(item.billed_tokens for item in self.by_model.values())
 
-    def format(self) -> str:
+    def format(self, heading: str = "Usage for this session", *, include_pricing: bool = True) -> str:
         with self._lock:
             if not self.by_model:
-                return "No model usage in the current session."
-            totals = UsageTotals()
-            for item in self.by_model.values():
-                totals.requests += item.requests
-                totals.input_tokens += item.input_tokens
-                totals.cached_input_tokens += item.cached_input_tokens
-                totals.cache_write_tokens += item.cache_write_tokens
-                totals.output_tokens += item.output_tokens
-                totals.reasoning_tokens += item.reasoning_tokens
-                totals.web_search_calls += item.web_search_calls
-                totals.estimated_cost_usd += item.estimated_cost_usd
-                totals.has_unknown_pricing = totals.has_unknown_pricing or item.has_unknown_pricing
-            estimate = f"${totals.estimated_cost_usd:.6f}" if totals.estimated_cost_usd < 0.01 else f"${totals.estimated_cost_usd:.4f}"
-            if totals.has_unknown_pricing:
-                estimate += " plus usage with unknown pricing"
-            lines = [
-                "Usage for this session",
-                f"requests: {totals.requests}",
-                f"input tokens: {totals.input_tokens:,} (cached {totals.cached_input_tokens:,}; cache writes {totals.cache_write_tokens:,})",
-                f"output tokens: {totals.output_tokens:,} (reasoning {totals.reasoning_tokens:,})",
-                f"web searches: {totals.web_search_calls}",
-                f"estimated cost: {estimate}",
-                "models: " + ", ".join(f"{model} ({item.requests})" for model, item in sorted(self.by_model.items())),
-            ]
-            if self.warning_turns:
-                lines.append(f"high-usage turn warnings: {self.warning_turns}")
-            lines.append(f"pricing snapshot: {PRICING_AS_OF}")
-            return "\n".join(lines)
+                if heading == "Usage for this session":
+                    return "No model usage in the current session."
+                return f"{heading}\nNo model usage recorded."
+            return _format_usage(
+                self.by_model,
+                heading,
+                warning_turns=self.warning_turns,
+                include_pricing=include_pricing,
+            )

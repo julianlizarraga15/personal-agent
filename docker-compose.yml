@@ -34,6 +34,7 @@ services:
       OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-16384}
       OPENAI_COMPACT_THRESHOLD: ${OPENAI_COMPACT_THRESHOLD:-32000}
       OPENAI_TURN_WARNING_TOKENS: ${OPENAI_TURN_WARNING_TOKENS:-100000}
+      USAGE_DB_PATH: ${USAGE_DB_PATH:-/workspace/.personal-agent-state/usage.sqlite3}
       AGENT_WORKSPACE_ROOT: /workspace/personal-agent
       SELF_REPOSITORY_PATH: /workspace/personal-agent
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml

@@ -16,7 +16,7 @@
 - Confirm both images build successfully with `docker compose build`.
 - Confirm the test suite with `python -m pytest` (or the development environment equivalent).
 - Inspect `docker compose logs -f bot` while submitting a task.
-- Send `/usage` to inspect session token totals, cache activity, web-search calls, and the dated cost estimate. Compare material spend with the OpenAI billing dashboard.
+- Send `/usage` to inspect current-session, current UTC day, and all recorded direct-API token totals, cache activity, web-search calls, and the dated cost estimate. Compare material spend with the OpenAI billing dashboard.
 - A successful legacy worker reports a `codex/*` branch, commit, and test status.
 - The conversational agent requires `OPENAI_API_KEY` and operates only inside the mounted `workspace/` directory.
 - The bot keeps the selected project and recent conversation in memory; restart the bot or use `/new` to clear it.
@@ -35,7 +35,7 @@
 - Audio rejected: use OGG, MP3/MPEG/MPGA, MP4/M4A, WAV, WebM, or FLAC under `TELEGRAM_MAX_AUDIO_BYTES` (20 MB by default) and `TELEGRAM_MAX_AUDIO_SECONDS` (10 minutes by default). Telegram documents need a supported extension or an `audio/*` MIME type to reach the handler. Check OpenAI connectivity when validation succeeds but transcription fails.
 - Unexpected API cost: inspect per-response usage logs and `/usage`, confirm the intended route/model, and check whether repeated file or command output crossed the compaction or high-usage threshold.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
-- State storage full/unavailable: free space or restore the mount, then restart the deployer. It retains the active request when failure state cannot be persisted and resumes it after restart.
+- State storage full/unavailable: free space or restore the mount. The deployer retains an active request when failure state cannot be persisted and resumes it after restart. The bot continues answering when the usage ledger cannot be written, reports the durable totals as unavailable or incomplete, and resumes recording future requests when storage recovers.
 
 ## Stop and recover
 

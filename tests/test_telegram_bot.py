@@ -13,7 +13,7 @@ from PIL import Image
 
 import telegram_bot
 from telegram_bot import DEFAULT_IMAGE_PROMPT, ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, _reply_agent_response, _telegram_html, _validate_image, required_settings, run_docker_worker, workspace_project_path
-from usage import ModelUsage
+from usage import ModelUsage, SessionUsage, UsageStore
 
 
 class FakeProcess:
@@ -610,7 +610,8 @@ class AudioTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         create = Mock(return_value=transcription)
         client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
         agent = SimpleNamespace(client=client, respond=Mock(return_value="Fixed it"))
-        session = ConversationSession()
+        persisted: list[ModelUsage] = []
+        session = ConversationSession(agent=telegram_bot.AgentSession(usage=SessionUsage(recorder=persisted.append)))
         telegram_bot.SESSIONS[42] = session
         message = SimpleNamespace(reply_text=AsyncMock())
         audio = telegram_bot.AudioInput(b"OggSdata", "audio.ogg", "audio/ogg")
@@ -633,6 +634,7 @@ class AudioTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in message.reply_text.await_args_list], ["Transcribing…", "Working...", "Fixed it"])
         self.assertEqual(message.reply_text.await_args_list[-1].kwargs["parse_mode"], "HTML")
         self.assertIn("gpt-4o-mini-transcribe", session.agent.usage.by_model)
+        self.assertEqual([item.phase for item in persisted], ["transcription"])
 
     async def test_captionless_audio_uses_transcript_directly(self) -> None:
         transcription = SimpleNamespace(text="Run the tests", usage=None)
@@ -729,12 +731,46 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(reply_text=AsyncMock())
         update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
 
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}):
-            await telegram_bot.usage_command(update, SimpleNamespace())
+        with tempfile.TemporaryDirectory() as directory:
+            store = UsageStore(Path(directory) / "usage.sqlite3")
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                "telegram_bot.configured_usage_store", return_value=store
+            ):
+                await telegram_bot.usage_command(update, SimpleNamespace())
 
         report = message.reply_text.await_args.args[0]
-        self.assertIn("Usage for this session", report)
+        self.assertIn("Current session", report)
         self.assertIn("gpt-5.6-luna", report)
+        self.assertIn("Today (UTC)\nNo model usage recorded.", report)
+
+    async def test_usage_command_reports_durable_usage_without_active_session(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+        with tempfile.TemporaryDirectory() as directory:
+            store = UsageStore(Path(directory) / "usage.sqlite3")
+            store.record(42, ModelUsage("gpt-5.6-luna", "answer", input_tokens=100, output_tokens=20))
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                "telegram_bot.configured_usage_store", return_value=store
+            ):
+                await telegram_bot.usage_command(update, SimpleNamespace())
+
+        report = message.reply_text.await_args.args[0]
+        self.assertIn("Current session\nNo model usage recorded.", report)
+        self.assertIn("Today (UTC)\nrequests: 1", report)
+        self.assertIn("All recorded usage\nrequests: 1", report)
+
+    async def test_usage_command_reports_durable_store_failure(self) -> None:
+        store = Mock()
+        store.summary.side_effect = OSError("disk unavailable")
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot.configured_usage_store", return_value=store
+        ), self.assertLogs("telegram_bot", level="ERROR"):
+            await telegram_bot.usage_command(update, SimpleNamespace())
+
+        self.assertIn("Durable usage\nUnavailable", message.reply_text.await_args.args[0])
 
     async def test_project_selection_resets_usage_totals(self) -> None:
         session = ConversationSession()
@@ -751,6 +787,48 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
             await telegram_bot.select_project(update, SimpleNamespace(args=["demo"]))
 
         self.assertEqual(telegram_bot.SESSIONS[42].agent.usage.format(), "No model usage in the current session.")
+
+    async def test_project_selection_retains_durable_usage_totals(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            (workspace / "demo").mkdir()
+            store = UsageStore(Path(directory) / "usage.sqlite3")
+            with patch.dict(
+                os.environ,
+                {"TELEGRAM_ALLOWED_USER_ID": "42", "AGENT_WORKSPACE_ROOT": str(workspace)},
+            ), patch("telegram_bot.configured_usage_store", return_value=store):
+                session = telegram_bot.session_for(42)
+                session.agent.usage.add(ModelUsage("gpt-5.6-luna", "answer", input_tokens=100))
+                await telegram_bot.select_project(update, SimpleNamespace(args=["demo"]))
+
+            durable = store.summary(42)
+
+        self.assertEqual(telegram_bot.SESSIONS[42].agent.usage.format(), "No model usage in the current session.")
+        self.assertEqual(durable.by_model["gpt-5.6-luna"].requests, 1)
+
+    async def test_new_and_stop_clear_sessions_without_deleting_durable_usage(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+        with tempfile.TemporaryDirectory() as directory:
+            store = UsageStore(Path(directory) / "usage.sqlite3")
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                "telegram_bot.configured_usage_store", return_value=store
+            ):
+                telegram_bot.session_for(42).agent.usage.add(
+                    ModelUsage("gpt-5.6-luna", "answer", input_tokens=100)
+                )
+                await telegram_bot.new_session(update, SimpleNamespace())
+                self.assertNotIn(42, telegram_bot.SESSIONS)
+                telegram_bot.session_for(42)
+                await telegram_bot.stop_session(update, SimpleNamespace())
+
+            durable = store.summary(42)
+
+        self.assertNotIn(42, telegram_bot.SESSIONS)
+        self.assertEqual(durable.by_model["gpt-5.6-luna"].requests, 1)
 
     async def test_thumbs_down_rejects_matching_prompt_and_confirms(self) -> None:
         session = ConversationSession()

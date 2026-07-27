@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agent import Agent, AgentSession, Computer, ImageInput, ProjectContext, _is_non_fast_forward, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
 from router import RouteDecision, Router
-from usage import ModelUsage
+from usage import ModelUsage, SessionUsage
 
 
 class ComputerToolTests(unittest.TestCase):
@@ -378,11 +378,16 @@ class RouterTests(unittest.TestCase):
                 )
 
         router = CapturingRouter()
-        session = AgentSession(routing_history=[{"role": "user", "content": "previous"}])
+        recorded: list[ModelUsage] = []
+        session = AgentSession(
+            routing_history=[{"role": "user", "content": "previous"}],
+            usage=SessionUsage(recorder=recorded.append),
+        )
         Agent(client=object(), router=router).respond(session, "latest")
 
         self.assertEqual(router.context["recent_conversation"], [{"role": "user", "content": "previous"}])
         self.assertEqual(session.usage.billed_tokens(), 12)
+        self.assertEqual([item.phase for item in recorded], ["router"])
 
     def test_agent_sends_medium_route_to_intermediate_model(self) -> None:
         class FakeResponses:
@@ -490,11 +495,13 @@ class RouterTests(unittest.TestCase):
             def decide(self, message, context):
                 return RouteDecision("economy", confidence=0.95)
 
-        session = AgentSession()
+        recorded: list[ModelUsage] = []
+        session = AgentSession(usage=SessionUsage(recorder=recorded.append))
         with patch.dict(os.environ, {"OPENAI_TURN_WARNING_TOKENS": "50"}):
             Agent(client=SimpleNamespace(responses=FakeResponses()), router=EconomyRouter()).respond(session, "think")
 
         self.assertEqual(session.usage.warning_turns, 1)
+        self.assertEqual([item.phase for item in recorded], ["answer"])
 
     def test_agent_sends_large_route_to_existing_model(self) -> None:
         class FakeResponses:

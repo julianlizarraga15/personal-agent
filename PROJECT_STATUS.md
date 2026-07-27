@@ -11,9 +11,9 @@ Last updated: 2026-07-27
 - The conversational agent now has the OpenAI Responses API hosted `web_search` tool for current external information and source citations.
 - A configurable cost-aware router uses GPT-5 nano for high-confidence simple answers, Luna for ordinary reasoning/web work, Terra for routine computer work, and Sol for difficult, ambiguous, high-stakes, or deployment work.
 - Main-model requests use explicit effort, verbosity, output limits, selected capabilities, and server-side compaction. File listings, reads, command output, and exact-fragment edits are designed to reduce repeated tool-context cost.
-- Per-response token/cache/search usage is logged; `/usage` shows current-session totals and a dated estimated cost, while unusually large turns warn without being interrupted.
+- Per-response token/cache/search usage is logged and appended without message content to a host-persistent SQLite ledger; `/usage` shows current-session, current UTC day, and all recorded totals with a dated estimated cost, while unusually large turns warn without being interrupted.
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
-- The outer and live deployment checkouts are on `main` and aligned with `origin/main`.
+- The live deployment checkout is on `main` and aligned with `origin/main`; the separate outer deployment checkout remains at `a4d27eb` and is not the self-deployment source.
 - Local reaction-handler edits that predated the deployment are preserved in the live checkout as the named stash `pre-reaction-deploy-local-edits`; the published implementation supersedes their behavior.
 - The live Telegram/Docker deployment is verified with a healthy bot and persistent deployer service.
 - Self-deployment now has durable restart state, single-flight locking, readiness verification, rollback, main/origin preflight, and `/pending` status reporting.
@@ -26,12 +26,13 @@ Last updated: 2026-07-27
 
 ## Last stopping point
 
-- Telegram audio support is implemented locally with tests and a successful bot-image build, but is not yet published or deployed. Image understanding remains published and deployed; neither media path has been exercised end to end against live Telegram and OpenAI services.
+- Durable usage accounting is implemented, tested, published, and deployed. Historical usage from before this release was not recoverable; the new lifetime ledger starts with the first post-deployment direct OpenAI request.
 
 ## Next steps
 
 - Continue normal product work; update the stable deployer image manually only when deployment infrastructure changes.
-- Exercise `/usage`, each model route, compaction, and a bounded file-read continuation in a non-sensitive live Telegram session.
+- Exercise `/usage` after a non-sensitive model turn, then verify its daily and lifetime totals remain after a later bot restart.
+- Exercise each model route, compaction, and a bounded file-read continuation in a non-sensitive live Telegram session.
 - Send a non-sensitive photo and image document through the live bot after deployment, including a captionless image and an oversize/unsupported rejection case.
 - Publish and deploy audio support, then exercise a non-sensitive voice note and audio attachment with and without a caption plus an oversize/unsupported rejection case.
 - Make the model provider configurable (`OPENAI_BASE_URL`, API key, and model), keeping direct OpenAI as the default and adding OpenRouter as an optional backend.
@@ -43,7 +44,7 @@ Last updated: 2026-07-27
 - Keep changes focused and preserve user changes.
 - Do not expose secrets or weaken the isolation boundary.
 - The OpenAI model is hosted remotely and is called through `OPENAI_API_KEY`; the local bot program receives tool requests and executes them in its allowed container workspace.
-- Sessions are currently in memory and are lost when the bot restarts.
+- Conversation sessions are in memory and are lost when the bot restarts; direct OpenAI usage metadata persists outside Git at `/workspace/.personal-agent-state/usage.sqlite3` by default.
 - The conversational agent uses the mounted workspace as its default `computer` context; `/project` can narrow it to a subdirectory.
 - Direct OpenAI remains the default provider; OpenRouter is a possible compatibility/fallback backend, not yet implemented.
 - Approval is exact-action, single-pending-request, bound to its Telegram prompt for reactions, and expires after five minutes; text commands remain available.
@@ -54,8 +55,8 @@ Last updated: 2026-07-27
 
 ## Validation
 
-- Current validation: 110 unit tests pass via `python -m pytest` in a temporary environment, including audio admission, signature validation, transcription semantics and failures, image routing, multimodal request shape, current-turn cleanup, cost-aware routing, request controls, compaction pruning, bounded tools, token/cost accounting, `/usage`, session resets, reaction authorization, and deployment behavior. Python compilation and `git diff --check` also pass.
+- Current validation: 125 unit tests pass via `python -m pytest` in a temporary environment, including durable usage reopen/restart behavior, concurrent recording, UTC daily and lifetime aggregation, failure handling, audio admission, signature validation, transcription semantics and failures, image routing, multimodal request shape, current-turn cleanup, cost-aware routing, request controls, compaction pruning, bounded tools, token/cost accounting, `/usage`, session resets, reaction authorization, and deployment behavior. Python compilation and `git diff --check` also pass.
 - The audio- and image-capable bot image builds successfully; its production audio handler registers and synchronous model calls can be offloaded from the event loop. Neither media path has yet been exercised against live Telegram or OpenAI services.
-- The cost-aware bot image built successfully and the replacement bot reached Docker health; a live `/usage` exchange and model call have not yet been exercised.
+- The durable-usage bot image built successfully and the replacement bot reached Docker health; a live post-deployment `/usage` exchange and model call have not yet been exercised.
 - Earlier live deployment validation covered a queued deployment and controlled startup-failure rollback; the bot and deployer containers were healthy at that stopping point.
 - The reaction change was pushed to `origin/main`; the bot image built successfully, the replacement bot reached Docker health, and the persistent deployer remained running. A live Telegram reaction exchange and model call have not been exercised.
