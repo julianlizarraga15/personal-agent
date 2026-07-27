@@ -32,6 +32,7 @@
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the project exists under `workspace/`, the OpenAI API key is configured, and the bot image has been rebuilt after dependency changes.
 - Image rejected: use a JPEG, PNG, WEBP, or non-animated GIF under `TELEGRAM_MAX_IMAGE_BYTES` (10 MiB by default). Resend the image for later visual follow-ups because image bytes are not retained after the turn.
+- Audio rejected: use OGG, MP3/MPEG/MPGA, MP4/M4A, WAV, WebM, or FLAC under `TELEGRAM_MAX_AUDIO_BYTES` (20 MB by default) and `TELEGRAM_MAX_AUDIO_SECONDS` (10 minutes by default). Telegram documents need a supported extension or an `audio/*` MIME type to reach the handler. Check OpenAI connectivity when validation succeeds but transcription fails.
 - Unexpected API cost: inspect per-response usage logs and `/usage`, confirm the intended route/model, and check whether repeated file or command output crossed the compaction or high-usage threshold.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 - State storage full/unavailable: free space or restore the mount, then restart the deployer. It retains the active request when failure state cannot be persisted and resumes it after restart.

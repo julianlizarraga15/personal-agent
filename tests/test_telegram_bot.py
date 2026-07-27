@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from pathlib import Path
 
 from PIL import Image
@@ -394,6 +394,237 @@ class ImageMessageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(_validate_image(buffer.getvalue()), media_type)
 
 
+class AudioMessageTests(unittest.IsolatedAsyncioTestCase):
+    OGG = b"OggS" + b"\x00" * 32
+    MP3 = b"ID3" + b"\x04\x00\x00" + b"\x00" * 32
+
+    def setUp(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    def tearDown(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    @staticmethod
+    def media(
+        data: bytes,
+        *,
+        size: int | None = None,
+        duration: int | None = None,
+        file_name: str | None = None,
+        mime_type: str | None = None,
+    ) -> SimpleNamespace:
+        downloaded = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(data)))
+        return SimpleNamespace(
+            file_size=len(data) if size is None else size,
+            duration=duration,
+            file_name=file_name,
+            mime_type=mime_type,
+            get_file=AsyncMock(return_value=downloaded),
+        )
+
+    @staticmethod
+    def update(message: SimpleNamespace, user_id: int = 42) -> SimpleNamespace:
+        return SimpleNamespace(effective_user=SimpleNamespace(id=user_id), effective_message=message)
+
+    async def test_voice_note_is_downloaded_and_passed_to_agent_with_caption(self) -> None:
+        voice = self.media(self.OGG, duration=8, mime_type="audio/ogg")
+        message = SimpleNamespace(
+            voice=voice,
+            audio=None,
+            document=None,
+            caption="Summarize this",
+            reply_text=AsyncMock(),
+        )
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_agent", new_callable=AsyncMock
+        ) as run_agent:
+            await telegram_bot.audio_message(self.update(message), SimpleNamespace())
+
+        voice.get_file.assert_awaited_once_with()
+        audio = run_agent.await_args.kwargs["audio"]
+        self.assertEqual((audio.data, audio.filename, audio.media_type), (self.OGG, "audio.ogg", "audio/ogg"))
+        self.assertEqual(run_agent.await_args.args[2], "Summarize this")
+
+    async def test_audio_attachment_precedes_audio_document(self) -> None:
+        audio = self.media(self.MP3, duration=5, file_name="song.mp3")
+        document = self.media(self.OGG, file_name="voice.ogg")
+        message = SimpleNamespace(
+            voice=None,
+            audio=audio,
+            document=document,
+            caption=None,
+            reply_text=AsyncMock(),
+        )
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_agent", new_callable=AsyncMock
+        ) as run_agent:
+            await telegram_bot.audio_message(self.update(message), SimpleNamespace())
+
+        audio.get_file.assert_awaited_once_with()
+        document.get_file.assert_not_awaited()
+        self.assertEqual(run_agent.await_args.kwargs["audio"].filename, "audio.mp3")
+
+    async def test_declared_size_and_duration_are_rejected_before_download(self) -> None:
+        cases = (
+            (self.media(self.OGG, size=11, duration=1), {"TELEGRAM_MAX_AUDIO_BYTES": "10"}, "too large"),
+            (self.media(self.OGG, size=1, duration=11), {"TELEGRAM_MAX_AUDIO_SECONDS": "10"}, "too long"),
+        )
+        for media, override, expected in cases:
+            with self.subTest(expected=expected):
+                message = SimpleNamespace(
+                    voice=media,
+                    audio=None,
+                    document=None,
+                    caption=None,
+                    reply_text=AsyncMock(),
+                )
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42", **override}), patch(
+                    "telegram_bot._run_agent", new_callable=AsyncMock
+                ) as run_agent:
+                    await telegram_bot.audio_message(self.update(message), SimpleNamespace())
+                media.get_file.assert_not_awaited()
+                run_agent.assert_not_awaited()
+                self.assertIn(expected, message.reply_text.await_args.args[0].lower())
+
+    async def test_actual_oversize_invalid_and_download_failure_do_not_run_agent(self) -> None:
+        cases = (
+            (self.media(self.OGG, size=1), {"TELEGRAM_MAX_AUDIO_BYTES": "10"}, "too large"),
+            (self.media(b"not audio"), {}, "couldn’t use"),
+        )
+        for media, override, expected in cases:
+            with self.subTest(expected=expected):
+                message = SimpleNamespace(voice=media, audio=None, document=None, caption=None, reply_text=AsyncMock())
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42", **override}), patch(
+                    "telegram_bot._run_agent", new_callable=AsyncMock
+                ) as run_agent:
+                    await telegram_bot.audio_message(self.update(message), SimpleNamespace())
+                run_agent.assert_not_awaited()
+                self.assertIn(expected, message.reply_text.await_args.args[0].lower())
+
+        media = self.media(self.OGG)
+        media.get_file.side_effect = RuntimeError("telegram unavailable")
+        message = SimpleNamespace(voice=media, audio=None, document=None, caption=None, reply_text=AsyncMock())
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_agent", new_callable=AsyncMock
+        ) as run_agent:
+            await telegram_bot.audio_message(self.update(message), SimpleNamespace())
+        run_agent.assert_not_awaited()
+        self.assertIn("download", message.reply_text.await_args.args[0].lower())
+
+    async def test_unauthorized_and_busy_audio_are_not_downloaded(self) -> None:
+        for user_id, running in ((7, False), (42, True)):
+            with self.subTest(user_id=user_id, running=running):
+                voice = self.media(self.OGG)
+                message = SimpleNamespace(voice=voice, audio=None, document=None, caption=None, reply_text=AsyncMock())
+                if running:
+                    telegram_bot.SESSIONS[42] = ConversationSession(running=True)
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                    "telegram_bot._run_agent", new_callable=AsyncMock
+                ) as run_agent:
+                    await telegram_bot.audio_message(self.update(message, user_id), SimpleNamespace())
+                voice.get_file.assert_not_awaited()
+                run_agent.assert_not_awaited()
+
+    def test_audio_validation_accepts_supported_signatures(self) -> None:
+        expected = (
+            (self.OGG, ("audio.ogg", "audio/ogg")),
+            (self.MP3, ("audio.mp3", "audio/mpeg")),
+            (b"fLaC" + b"\x00" * 32, ("audio.flac", "audio/flac")),
+            (b"RIFF\x00\x00\x00\x00WAVE" + b"\x00" * 16, ("audio.wav", "audio/wav")),
+            (b"\x1aE\xdf\xa3" + b"\x00" * 32, ("audio.webm", "audio/webm")),
+            (b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 20, ("audio.m4a", "audio/mp4")),
+            (b"\xff\xfb" + b"\x00" * 32, ("audio.mp3", "audio/mpeg")),
+        )
+        for payload, result in expected:
+            with self.subTest(result=result):
+                self.assertEqual(telegram_bot._validate_audio(payload), result)
+
+
+class AudioTranscriptionTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    async def inline_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def test_audio_is_transcribed_then_caption_directs_agent(self) -> None:
+        transcription = SimpleNamespace(
+            text="The server returns error 500.",
+            model="gpt-4o-mini-transcribe",
+            usage=SimpleNamespace(input_tokens=12, output_tokens=5),
+        )
+        create = Mock(return_value=transcription)
+        client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+        agent = SimpleNamespace(client=client, respond=Mock(return_value="Fixed it"))
+        session = ConversationSession()
+        telegram_bot.SESSIONS[42] = session
+        message = SimpleNamespace(reply_text=AsyncMock())
+        audio = telegram_bot.AudioInput(b"OggSdata", "audio.ogg", "audio/ogg")
+
+        with patch.dict(os.environ, {"OPENAI_TRANSCRIPTION_MODEL": "gpt-4o-mini-transcribe"}), patch(
+            "telegram_bot.Agent", return_value=agent
+        ), patch("telegram_bot.asyncio.to_thread", new=self.inline_thread):
+            await telegram_bot._run_agent(message, session, "Diagnose and fix it", 42, audio=audio)
+
+        create.assert_called_once_with(
+            model="gpt-4o-mini-transcribe",
+            file=("audio.ogg", b"OggSdata", "audio/ogg"),
+            response_format="json",
+        )
+        task = agent.respond.call_args.args[1]
+        self.assertIn("User instruction:\nDiagnose and fix it", task)
+        self.assertIn("Audio transcript", task)
+        self.assertIn("The server returns error 500.", task)
+        self.assertNotIn(b"OggSdata", repr(session.agent.input_items).encode())
+        self.assertEqual([call.args[0] for call in message.reply_text.await_args_list], ["Transcribing…", "Working...", "Fixed it"])
+        self.assertIn("gpt-4o-mini-transcribe", session.agent.usage.by_model)
+
+    async def test_captionless_audio_uses_transcript_directly(self) -> None:
+        transcription = SimpleNamespace(text="Run the tests", usage=None)
+        client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=Mock(return_value=transcription))))
+        agent = SimpleNamespace(client=client, respond=Mock(return_value="Done"))
+        session = ConversationSession()
+        telegram_bot.SESSIONS[42] = session
+        message = SimpleNamespace(reply_text=AsyncMock())
+
+        with patch("telegram_bot.Agent", return_value=agent), patch(
+            "telegram_bot.asyncio.to_thread", new=self.inline_thread
+        ):
+            await telegram_bot._run_agent(
+                message,
+                session,
+                "",
+                42,
+                audio=telegram_bot.AudioInput(b"OggSdata", "audio.ogg", "audio/ogg"),
+            )
+
+        self.assertEqual(agent.respond.call_args.args[1], "Run the tests")
+
+    async def test_empty_or_failed_transcription_does_not_run_agent(self) -> None:
+        for result in (SimpleNamespace(text="   ", usage=None), RuntimeError("secret provider detail")):
+            with self.subTest(result=result):
+                create = Mock(side_effect=result if isinstance(result, Exception) else None, return_value=None if isinstance(result, Exception) else result)
+                client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+                agent = SimpleNamespace(client=client, respond=Mock(return_value="unused"))
+                session = ConversationSession()
+                telegram_bot.SESSIONS[42] = session
+                message = SimpleNamespace(reply_text=AsyncMock())
+                with patch("telegram_bot.Agent", return_value=agent), patch(
+                    "telegram_bot.asyncio.to_thread", new=self.inline_thread
+                ):
+                    await telegram_bot._run_agent(
+                        message,
+                        session,
+                        "",
+                        42,
+                        audio=telegram_bot.AudioInput(b"OggSdata", "audio.ogg", "audio/ogg"),
+                    )
+                agent.respond.assert_not_called()
+                reply = message.reply_text.await_args_list[-1].args[0]
+                self.assertNotIn("secret provider detail", reply)
+                self.assertFalse(session.running)
+
+
 class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         telegram_bot.SESSIONS.clear()
@@ -526,6 +757,7 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(telegram_bot.usage_command, command_callbacks)
         message_callbacks = {handler.callback for handler in handlers if isinstance(handler, MessageHandler)}
         self.assertIn(telegram_bot.image_message, message_callbacks)
+        self.assertIn(telegram_bot.audio_message, message_callbacks)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,20 @@ class UsageTests(unittest.TestCase):
         usage = ModelUsage("gpt-5.6-2026-07-01", "answer", input_tokens=1_000_000)
         self.assertAlmostEqual(usage.estimated_cost_usd, 5.0)
 
+    def test_transcription_tokens_are_counted_with_unknown_pricing(self) -> None:
+        response = SimpleNamespace(
+            model="gpt-4o-mini-transcribe",
+            usage=SimpleNamespace(input_tokens=120, output_tokens=18),
+            output=(),
+        )
+
+        usage = ModelUsage.from_response(response, "gpt-4o-mini-transcribe", "transcription")
+        session = SessionUsage()
+        session.add(usage)
+
+        self.assertEqual((usage.phase, usage.input_tokens, usage.output_tokens), ("transcription", 120, 18))
+        self.assertIn("unknown pricing", session.format())
+
     def test_session_format_reports_unknown_prices_and_warnings(self) -> None:
         session = SessionUsage()
         session.add(ModelUsage("custom-model", "answer", input_tokens=10, output_tokens=2))

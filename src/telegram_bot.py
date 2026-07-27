@@ -15,12 +15,13 @@ import uuid
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image, UnidentifiedImageError
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
+from usage import ModelUsage
 
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +36,9 @@ STATUS_MESSAGES = {
 
 DEFAULT_IMAGE_PROMPT = "Describe this image and call out any visible text, errors, or actionable details."
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_AUDIO_BYTES = 20_000_000
+DEFAULT_MAX_AUDIO_SECONDS = 600
+DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
 IMAGE_MEDIA_TYPES = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -42,9 +46,33 @@ IMAGE_MEDIA_TYPES = {
     "WEBP": "image/webp",
 }
 
+AUDIO_MEDIA_TYPES = {
+    "audio/flac",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/wav",
+    "audio/webm",
+}
+
 
 class WorkerExecutionError(RuntimeError):
     """The Docker worker failed and its output should be shown to the user."""
+
+
+@dataclass(frozen=True)
+class AudioInput:
+    """Validated audio bytes supplied only to the transcription request."""
+
+    data: bytes
+    filename: str
+    media_type: str
+
+    def __post_init__(self) -> None:
+        if self.media_type not in AUDIO_MEDIA_TYPES:
+            raise ValueError("unsupported audio media type")
+        if not self.filename.startswith("audio.") or "/" in self.filename or "\\" in self.filename:
+            raise ValueError("unsafe audio filename")
 
 
 @dataclass(frozen=True)
@@ -469,7 +497,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if user is None or message is None or not _is_allowed(user.id):
         return
     await message.reply_text(
-        "Chat normally or send an image to work in the configured computer workspace; use /project <directory-name> to narrow the context.\n"
+        "Chat normally, send an image, or send voice/audio to work in the configured computer workspace; use /project <directory-name> to narrow the context.\n"
         "/new starts over, /stop forgets the session, /usage shows model cost, /pending shows deployment state, and /run <url> <task> runs one task.\n"
         "For requested edits or Git actions, react 👍/👎 to the approval prompt or use /approve <id> or /reject <id>."
     )
@@ -538,6 +566,60 @@ async def image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _run_agent(message, session, prompt, user.id, image=ImageInput(data, media_type))
 
 
+async def audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Download and validate one Telegram audio file before transcribing it."""
+
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    session = session_for(user.id)
+    if await _reply_if_busy(message, session):
+        return
+
+    media = (
+        getattr(message, "voice", None)
+        or getattr(message, "audio", None)
+        or getattr(message, "document", None)
+    )
+    if media is None:
+        return
+    max_bytes = _max_audio_bytes()
+    declared_size = getattr(media, "file_size", None)
+    if isinstance(declared_size, int) and declared_size > max_bytes:
+        await message.reply_text(f"That audio is too large. The limit is {_audio_size_limit_text(max_bytes)}.")
+        return
+    max_seconds = _max_audio_seconds()
+    duration = getattr(media, "duration", None)
+    if isinstance(duration, (int, float)) and duration > max_seconds:
+        await message.reply_text(f"That audio is too long. The limit is {_audio_duration_limit_text(max_seconds)}.")
+        return
+
+    try:
+        telegram_file = await media.get_file()
+        data = bytes(await telegram_file.download_as_bytearray())
+    except Exception as exc:
+        LOGGER.warning("audio download failed user_id=%s error_type=%s", user.id, type(exc).__name__)
+        await message.reply_text("I couldn’t download that audio from Telegram. Please try sending it again.")
+        return
+    if len(data) > max_bytes:
+        await message.reply_text(f"That audio is too large. The limit is {_audio_size_limit_text(max_bytes)}.")
+        return
+
+    try:
+        filename, media_type = _validate_audio(data)
+    except ValueError as exc:
+        LOGGER.warning("audio rejected user_id=%s reason=%s", user.id, exc)
+        await message.reply_text(
+            "I couldn’t use that audio. Send a valid OGG, MP3, MP4/M4A, WAV, WebM, or FLAC file within the limits."
+        )
+        return
+
+    instruction = (getattr(message, "caption", None) or "").strip()
+    await _run_agent(message, session, instruction, user.id, audio=AudioInput(data, filename, media_type))
+
+
 async def _reply_if_busy(message: object, session: ConversationSession) -> bool:
     if not session.running:
         return False
@@ -566,6 +648,39 @@ def _max_image_bytes() -> int:
     return value
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        LOGGER.warning("invalid %s; using default", name)
+        return default
+    if value <= 0:
+        LOGGER.warning("non-positive %s; using default", name)
+        return default
+    return value
+
+
+def _max_audio_bytes() -> int:
+    return _positive_env_int("TELEGRAM_MAX_AUDIO_BYTES", DEFAULT_MAX_AUDIO_BYTES)
+
+
+def _max_audio_seconds() -> int:
+    return _positive_env_int("TELEGRAM_MAX_AUDIO_SECONDS", DEFAULT_MAX_AUDIO_SECONDS)
+
+
+def _audio_size_limit_text(max_bytes: int) -> str:
+    return f"{max_bytes / 1_000_000:g} MB" if max_bytes >= 1_000_000 else f"{max_bytes:,} bytes"
+
+
+def _audio_duration_limit_text(max_seconds: int) -> str:
+    if max_seconds >= 60 and max_seconds % 60 == 0:
+        return f"{max_seconds // 60} minutes"
+    return f"{max_seconds} seconds"
+
+
 def _validate_image(data: bytes) -> str:
     """Return the actual supported media type or reject unsafe image data."""
 
@@ -583,6 +698,26 @@ def _validate_image(data: bytes) -> str:
         return IMAGE_MEDIA_TYPES[str(image_format)]
     except KeyError as exc:
         raise ValueError("unsupported image format") from exc
+
+
+def _validate_audio(data: bytes) -> tuple[str, str]:
+    """Return a safe filename and media type based on the actual file signature."""
+
+    if data.startswith(b"OggS"):
+        return "audio.ogg", "audio/ogg"
+    if data.startswith(b"fLaC"):
+        return "audio.flac", "audio/flac"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WAVE":
+        return "audio.wav", "audio/wav"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "audio.webm", "audio/webm"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "audio.m4a", "audio/mp4"
+    if data.startswith(b"ID3") or (
+        len(data) >= 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0
+    ):
+        return "audio.mp3", "audio/mpeg"
+    raise ValueError("unsupported or invalid audio format")
 
 
 def _is_allowed(user_id: int) -> bool:
@@ -640,6 +775,7 @@ async def _run_agent(
     user_id: int,
     *,
     image: ImageInput | None = None,
+    audio: AudioInput | None = None,
 ) -> None:
     if session.running:
         await message.reply_text("I’m still working on the previous request.")  # type: ignore[attr-defined]
@@ -647,7 +783,6 @@ async def _run_agent(
     turn_id = uuid.uuid4().hex[:8]
     started = time.monotonic()
     LOGGER.info("turn started turn_id=%s user_id=%s project=%s", turn_id, user_id, session.project or "computer")
-    await message.reply_text("Working...")  # type: ignore[attr-defined]
     session.running = True
     loop = asyncio.get_running_loop()
 
@@ -693,8 +828,46 @@ async def _run_agent(
             LOGGER.exception("turn restart_notice_failed turn_id=%s", turn_id)
 
     try:
+        agent = Agent()
+        if audio is not None:
+            await message.reply_text("Transcribing…")  # type: ignore[attr-defined]
+            transcription_model = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
+            try:
+                transcription = await asyncio.to_thread(
+                    _transcribe_audio,
+                    agent.client,
+                    audio,
+                    transcription_model,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "audio transcription failed turn_id=%s model=%s error_type=%s",
+                    turn_id,
+                    transcription_model,
+                    type(exc).__name__,
+                )
+                if SESSIONS.get(user_id) is session:
+                    await message.reply_text("I couldn’t transcribe that audio. Please try again.")  # type: ignore[attr-defined]
+                return
+            usage = ModelUsage.from_response(transcription, transcription_model, "transcription")
+            session.agent.usage.add(usage)
+            LOGGER.info(
+                "model usage turn_id=%s phase=transcription model=%s input_tokens=%s output_tokens=%s",
+                turn_id,
+                usage.model,
+                usage.input_tokens,
+                usage.output_tokens,
+            )
+            transcript = str(getattr(transcription, "text", "") or "").strip()
+            if not transcript:
+                LOGGER.info("audio transcription empty turn_id=%s", turn_id)
+                if SESSIONS.get(user_id) is session:
+                    await message.reply_text("I couldn’t detect any speech in that audio.")  # type: ignore[attr-defined]
+                return
+            task = _audio_task(task, transcript)
+        await message.reply_text("Working...")  # type: ignore[attr-defined]
         response = await asyncio.to_thread(
-            Agent().respond,
+            agent.respond,
             session.agent,
             task,
             request_approval,
@@ -716,6 +889,28 @@ async def _run_agent(
             await message.reply_text(f"I couldn’t complete that: {exc}")  # type: ignore[attr-defined]
     finally:
         session.running = False
+
+
+def _transcribe_audio(client: Any, audio: AudioInput, model: str) -> Any:
+    """Submit validated in-memory audio to the synchronous transcription API."""
+
+    return client.audio.transcriptions.create(
+        model=model,
+        file=(audio.filename, audio.data, audio.media_type),
+        response_format="json",
+    )
+
+
+def _audio_task(instruction: str, transcript: str) -> str:
+    """Apply an optional Telegram caption as an instruction over transcribed speech."""
+
+    if not instruction:
+        return transcript
+    return (
+        f"User instruction:\n{instruction}\n\n"
+        "Audio transcript (user-provided speech):\n"
+        f"{transcript}"
+    )
 
 
 async def _send_pending_statuses(message: object, statuses: asyncio.Queue[str]) -> None:
@@ -796,6 +991,10 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
         )
     )
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, image_message))
+    audio_filter = filters.VOICE | filters.AUDIO | filters.Document.AUDIO
+    for extension in ("flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "ogg", "wav", "webm"):
+        audio_filter |= filters.Document.FileExtension(extension)
+    application.add_handler(MessageHandler(audio_filter, audio_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, conversational_message))
     return application
 

@@ -9,6 +9,7 @@ This project runs an agent that can modify and push code, so deployment security
 - The Telegram bot accepts commands only from the numeric `TELEGRAM_ALLOWED_USER_ID`.
 - The model receives only explicitly-defined tools, and file paths are constrained to the mounted workspace.
 - Telegram images are downloaded into memory rather than through token-bearing public URLs, capped by declared and actual size, and decoded with decompression-bomb protection. Only verified JPEG, PNG, WEBP, and single-frame GIF inputs reach the model; their Base64 data is removed from replay state after the turn.
+- Telegram audio is downloaded into memory only after owner authorization and busy-session checks, capped by declared and actual size plus reported duration, and classified from file signatures rather than Telegram MIME metadata. Only supported formats reach the OpenAI transcription endpoint; raw bytes are discarded and never enter session history or logs.
 - The small routing model receives no tools or file contents. It conservatively chooses a model tier and minimum capability set, and falls back to the large agent with available capabilities for ambiguity or routing failures; its decision never bypasses path constraints or approval checks.
 - The hosted web-search tool is the only external-information capability; web results are untrusted input and do not grant the model access to local secrets or arbitrary local network actions.
 - File writes and dedicated Git commit/push operations require explicit Telegram approval with a short-lived request ID. Reaction approvals are accepted only from the configured owner and only on the Telegram message bound to that exact pending request; command approval remains available. An explicit self-deployment request uses one broad approval for that complete operation, including edits, tests, commit, push, rebuild, and restart.
@@ -31,7 +32,7 @@ This project runs an agent that can modify and push code, so deployment security
 
 ## Threat assumptions
 
-Repository code, issue text, commit messages, task requests, and text visible inside images may contain prompt injection or malicious build steps. The agent must treat them as data, and operators should assume that running project tests can execute arbitrary code. Use a disposable host or stronger container isolation for untrusted repositories.
+Repository code, issue text, commit messages, task requests, text visible inside images, and transcribed speech may contain prompt injection or malicious build steps. The agent must treat them as data, and operators should assume that running project tests can execute arbitrary code. Use a disposable host or stronger container isolation for untrusted repositories.
 
 ## Incident response
 
