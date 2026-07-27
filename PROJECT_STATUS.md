@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-07-25
+Last updated: 2026-07-27
 
 ## Current state
 
@@ -14,6 +14,7 @@ Last updated: 2026-07-25
 - The current outer checkout is on `main`, one commit ahead of `origin/main` (`30914bb`, commit subject `l`).
 - An older, clean `codex/initial-project` checkout also exists under `workspace/personal-agent`; it was left untouched.
 - The live Telegram/Docker deployment has not been verified because no Docker daemon is available in this environment.
+- Self-deployment now has durable restart state, single-flight locking, readiness verification, rollback, main/origin preflight, and `/pending` status reporting.
 
 ## What we are building
 
@@ -22,11 +23,11 @@ Last updated: 2026-07-25
 
 ## Last stopping point
 
-- The latest completed work added a conservative small-model router and documented the current Responses API/computer-tool architecture.
-- The working tree is clean apart from the pre-existing untracked nested checkout `workspace/personal-agent/`.
+- Deployment reliability hardening is implemented and covered by unit tests; the working tree contains these requested changes.
 
 ## Next steps
 
+- Run a live Docker rebuild/recreate and deliberately exercise startup rollback on a trusted host.
 - Make the model provider configurable (`OPENAI_BASE_URL`, API key, and model), keeping direct OpenAI as the default and adding OpenRouter as an optional backend.
 - Verify the bot end-to-end with Docker and Telegram using a non-sensitive workspace checkout.
 - Move tool execution behind a persistent sandbox container and remove the bot's direct Docker-socket dependency when practical.
@@ -43,7 +44,7 @@ Last updated: 2026-07-25
 
 ## Validation
 
-- Current validation: `PYTHONPATH=src python3 -m unittest discover -s tests` passes (24 tests); Python compilation, `docker compose config`, and `git diff --check` pass.
+- Current validation: `PYTHONPATH=src python3 -m unittest discover -s tests` passes (39 tests); Python compilation, `docker compose config`, and `git diff --check` pass.
 - The required literal `python -m pytest` validation is unavailable because `python` is not installed in the environment.
 - `python3 -m pytest` is also unavailable because pytest is not installed.
 - Python compilation and `docker compose config` pass with placeholder validation environment values.

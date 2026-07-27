@@ -20,13 +20,4 @@ case "$bot_image" in
     *) echo "refusing an unexpected bot image" >&2; exit 2 ;;
 esac
 
-if docker image inspect "$bot_image" >/dev/null 2>&1; then
-    base_image=${bot_image%:*}
-    rollback_image="${base_image}:rollback-$(date -u +%Y%m%d%H%M%S)"
-    docker tag "$bot_image" "$rollback_image"
-    echo "previous image saved as $rollback_image"
-fi
-
-docker-compose -f "$compose_file" -p "$project_name" build bot
-docker-compose -f "$compose_file" -p "$project_name" up -d --no-build --force-recreate bot
-echo "bot service rebuilt and recreated"
+exec python -m deployment

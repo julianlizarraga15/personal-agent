@@ -305,6 +305,25 @@ def self_deploy(
     if approval_callback is None:
         return "self-deployment requires Telegram approval"
 
+    branch_result = subprocess.run(["git", "branch", "--show-current"], cwd=project.path, capture_output=True, text=True, timeout=30)
+    branch = branch_result.stdout.strip()
+    if branch_result.returncode or branch != "main":
+        return json.dumps({"stage": "preflight", "status": "rejected", "error": "self-deployment requires the self-repository to be checked out on main", "branch": branch})
+    state_dir = Path(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state"))
+    active_manifest = DeploymentManifest(state_dir).read()
+    if (state_dir / "deployment.lock").exists() or (active_manifest and active_manifest.get("status") == "restarting"):
+        return json.dumps({"stage": "preflight", "status": "rejected", "error": "deployment already in progress; use /pending"})
+    fetched = subprocess.run(["git", "fetch", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
+    if fetched.returncode:
+        return json.dumps({"stage": "sync", "status": "failed", "exit_code": fetched.returncode, "output": (fetched.stdout + fetched.stderr)[-8000:]})
+    divergence = subprocess.run(["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"], cwd=project.path, capture_output=True, text=True, timeout=30)
+    try:
+        ahead, behind = (int(value) for value in divergence.stdout.split())
+    except (ValueError, TypeError):
+        ahead, behind = 0, 0
+    if behind:
+        return json.dumps({"stage": "preflight", "status": "push_conflict", "error": "origin/main advanced; synchronize the checkout before deploying", "behind": behind, "ahead": ahead})
+
     LOGGER.info("self_deploy stage=tests")
     tests = subprocess.run(["python", "-m", "pytest"], cwd=project.path, capture_output=True, text=True, timeout=300)
     if tests.returncode:
@@ -334,11 +353,6 @@ def self_deploy(
     commit = subprocess.run(["git", "commit", "-m", "Deploy self-update"], cwd=project.path, capture_output=True, text=True, timeout=30)
     if commit.returncode:
         return json.dumps({"stage": "commit", "exit_code": commit.returncode, "output": (commit.stdout + commit.stderr)[-6000:]})
-    branch_result = subprocess.run(["git", "branch", "--show-current"], cwd=project.path, capture_output=True, text=True, timeout=30)
-    branch = branch_result.stdout.strip()
-    if branch_result.returncode or branch != "main":
-        LOGGER.error("self_deploy failed stage=branch branch=%s", branch)
-        return json.dumps({"stage": "branch", "exit_code": branch_result.returncode, "branch": branch, "error": "self-deployment requires the self-repository to be checked out on main"})
     if not approval_callback("self_deploy_push", "push self-update commit to origin/main"):
         LOGGER.info("self_deploy stopped stage=push_approval")
         return "deployment stopped; push was not approved"

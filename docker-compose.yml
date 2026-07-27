@@ -22,6 +22,7 @@ services:
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
       DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
       BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
+      DEPLOYMENT_STATE_DIR: /workspace/.personal-agent-state
       HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
       GIT_SSH_COMMAND: >-
         ssh -i /run/secrets/github_key

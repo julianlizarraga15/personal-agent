@@ -14,6 +14,7 @@ This project runs an agent that can modify and push code, so deployment security
 - Destructive shell commands and shell-form Git publication remain blocked; Git publication uses the dedicated approval flow.
 - Secrets belong in the runtime environment or a local `.env` file. `.env` is ignored by Git and must never be committed.
 - Operational logs are written to container stdout and intentionally exclude prompts, message text, file contents, command output, and credentials. Restrict access to Docker logs because paths, tool names, project names, and numeric Telegram user IDs may still be present.
+- Self-deployment writes only deployment ID, commit, image references, timestamps, and machine-readable status to the host-persistent `/workspace/.personal-agent-state/deployment.json`; an atomic lock prevents concurrent deployments and stale locks are reclaimed only after the deployment timeout window.
 - Never inspect, read, print, or expose the contents of `.env` under any circumstances. Use `.env.example` for configuration guidance.
 - Test commands are detected from repository metadata and run inside the worker container.
 

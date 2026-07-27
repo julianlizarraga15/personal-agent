@@ -68,6 +68,6 @@ The bot writes operational logs to stdout. Follow them in real time with `docker
 
 To let the agent update this bot, keep a checkout at `workspace/personal-agent` on `main` and tell it to modify and deploy itself. It runs tests and requests one approval for the complete self-deployment operation, then pushes `main` directly before rebuilding the bot. The bot sends a “Changes pushed…” notice immediately before the self-restart; the final response may not arrive because the old process is being recreated. Set `HOST_WORKSPACE_DIR` to the absolute host path for `workspace/` when using this flow; the deployment helper retains the previous bot image under a rollback tag. A bot restart loses in-memory conversations and pending approvals.
 
-Stop it with `docker compose down`. Mounting `/var/run/docker.sock` gives the bot permission to start containers through the host Docker daemon; keep the bot deployment on a trusted machine.
+Use `/pending` for active approvals or deployment recovery state. Self-deployment state is persisted outside Git at `/workspace/.personal-agent-state/deployment.json`; startup reports completion or rollback recovery. Stop it with `docker compose down`. Mounting `/var/run/docker.sock` gives the bot permission to start containers through the host Docker daemon; keep the bot deployment on a trusted machine.
 
 The reusable worker API is available as `worker.execute_workflow(task, repo, on_status=...)`; the module CLI remains available inside the worker image.

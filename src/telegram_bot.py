@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from agent import Agent, AgentSession, ProjectContext
+from deployment import DeploymentManifest
 
 
 LOGGER = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class ConversationSession:
     agent: AgentSession = field(default_factory=lambda: AgentSession(default_project_context()))
     pending_approval: PendingApproval | None = field(default=None, repr=False)
     approval_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    approval_delivery_failed: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.history is None:
@@ -328,6 +330,26 @@ async def reject_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _resolve_approval(update, context, False)
 
 
+async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    session = SESSIONS.get(user.id)
+    lines: list[str] = []
+    if session is not None and session.pending_approval is not None:
+        request = session.pending_approval
+        lines.append(f"approval pending: {request.request_id} ({request.action})")
+        lines.append("approval delivery failed but request remains pending" if session.approval_delivery_failed else f"reply /approve {request.request_id} or /reject {request.request_id}")
+    manifest = DeploymentManifest(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state")).read()
+    if manifest and manifest.get("status") not in {None, "healthy"}:
+        lines.append(f"deployment: {manifest.get('status')} (id {manifest.get('deployment_id', 'unknown')})")
+        if manifest.get("error"):
+            lines.append(f"detail: {str(manifest['error'])[-500:]}")
+    await message.reply_text("\n".join(lines) if lines else "No approval or deployment is pending.")
+
+
 async def _resolve_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, approved: bool) -> None:
     user = update.effective_user
     message = update.effective_message
@@ -454,10 +476,12 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             delivery.result(timeout=30)
             LOGGER.info("turn approval_prompt_delivered turn_id=%s request_id=%s", turn_id, request.request_id)
         except FutureTimeoutError:
+            session.approval_delivery_failed = True
             LOGGER.error("turn approval_prompt_failed turn_id=%s request_id=%s reason=delivery_timeout", turn_id, request.request_id)
             # Keep the request pending. A slow Telegram API response is not a
             # rejection, and /approve without an ID remains available.
         except Exception:
+            session.approval_delivery_failed = True
             LOGGER.exception("turn approval_prompt_failed turn_id=%s request_id=%s", turn_id, request.request_id)
 
     def request_approval(action: str, summary: str) -> bool:
@@ -500,18 +524,35 @@ async def _send_pending_statuses(message: object, statuses: asyncio.Queue[str]) 
         await message.reply_text(STATUS_MESSAGES.get(status, status))  # type: ignore[attr-defined]
 
 
+async def report_startup_deployment(application: object) -> None:
+    manifest = DeploymentManifest(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state"))
+    state = manifest.read()
+    if not state or state.get("status") == "healthy":
+        return
+    status = state.get("status")
+    text = ("Deployment completed after restart." if status == "restarting" else
+            "Deployment restart failed; rollback completed." if status == "rollback_completed" else
+            f"Deployment recovered with state: {status}.")
+    try:
+        await application.bot.send_message(chat_id=int(os.environ["TELEGRAM_ALLOWED_USER_ID"]), text=text)  # type: ignore[attr-defined]
+        manifest.transition("healthy", recovered_from=status)
+    except Exception:
+        LOGGER.exception("deployment startup report failed status=%s", status)
+
+
 def build_application(environ: dict[str, str] | None = None) -> Application:
     from telegram.ext import Application, CommandHandler
     from telegram.ext import MessageHandler, filters
 
     token, _, _ = required_settings(environ)
-    application = Application.builder().token(token).concurrent_updates(True).build()
+    application = Application.builder().token(token).concurrent_updates(True).post_init(report_startup_deployment).build()
     application.add_handler(CommandHandler("run", run_command))
     application.add_handler(CommandHandler("project", select_project))
     application.add_handler(CommandHandler("new", new_session))
     application.add_handler(CommandHandler("stop", stop_session))
     application.add_handler(CommandHandler("approve", approve_action))
     application.add_handler(CommandHandler("reject", reject_action))
+    application.add_handler(CommandHandler("pending", pending_command))
     application.add_handler(CommandHandler(["help", "start"], help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, conversational_message))
     return application
