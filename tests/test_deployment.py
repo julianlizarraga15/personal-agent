@@ -38,6 +38,10 @@ class DeploymentStateTests(unittest.TestCase):
             claimed = queue.claim()
             self.assertEqual(claimed["commit"], "abc")
             queue.finish()
+            queue.manifest.transition("healthy", reported_at=123, verified_at="old")
+            second = queue.enqueue("def")
+            self.assertIsNone(second["reported_at"])
+            self.assertIsNone(second["verified_at"])
 
     def test_claim_resumes_an_active_request_after_controller_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

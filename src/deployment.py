@@ -104,7 +104,19 @@ class DeploymentQueue:
             temporary = self.request_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
             os.replace(temporary, self.request_path)
-            return self.manifest.write(**request, status="queued", updated_at=utc_now(), error=None)
+            return self.manifest.write(
+                **request,
+                status="queued",
+                updated_at=utc_now(),
+                error=None,
+                previous_image=None,
+                rollback_image=None,
+                rollback=None,
+                rolled_back_at=None,
+                verified_at=None,
+                reported_at=None,
+                recovered_from=None,
+            )
 
     def claim(self) -> dict | None:
         if not self.active_path.exists():
