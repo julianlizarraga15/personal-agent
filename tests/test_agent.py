@@ -1,7 +1,12 @@
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
 from router import RouteDecision, Router
