@@ -154,14 +154,63 @@ class ComputerToolTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertIn({"type": "web_search"}, client.responses.kwargs["tools"])
 
-    def test_output_items_remove_response_only_status_metadata(self) -> None:
-        class FakeOutputItem:
+    def test_output_items_remove_response_only_metadata(self) -> None:
+        class FakeHostedToolCall:
             def model_dump(self):
-                return {"type": "web_search_call", "status": "completed", "id": "call_1"}
+                return {
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "id": "call_1",
+                }
 
-        output = _output_items(SimpleNamespace(output=[FakeOutputItem()]))
+        class FakeCompactionItem:
+            def model_dump(self):
+                return {
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "opaque",
+                    "created_by": "server",
+                }
 
-        self.assertEqual(output, [{"type": "web_search_call", "id": "call_1"}])
+        output = _output_items(SimpleNamespace(output=[FakeHostedToolCall(), FakeCompactionItem()]))
+
+        self.assertEqual(
+            output,
+            [
+                {"type": "web_search_call", "id": "call_1"},
+                {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque"},
+            ],
+        )
+
+    def test_agent_sanitizes_existing_replay_items_before_request(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.input = None
+
+            def create(self, **kwargs):
+                self.input = copy.deepcopy(kwargs["input"])
+                return SimpleNamespace(output=[], output_text="ok")
+
+        class EconomyRouter:
+            def decide(self, message, context):
+                return RouteDecision("economy", confidence=0.95)
+
+        client = SimpleNamespace(responses=FakeResponses())
+        session = AgentSession(
+            input_items=[
+                {
+                    "type": "compaction",
+                    "id": "cmp_1",
+                    "encrypted_content": "opaque",
+                    "created_by": "server",
+                }
+            ]
+        )
+
+        Agent(client=client, router=EconomyRouter()).respond(session, "continue")
+
+        self.assertNotIn("created_by", client.responses.input[0])
+        self.assertNotIn("created_by", session.input_items[0])
 
 
 class ImageInputTests(unittest.TestCase):
@@ -308,6 +357,8 @@ class RouterTests(unittest.TestCase):
         request = router.client.responses.calls[0]
         self.assertEqual(request["reasoning"], {"effort": "minimal"})
         self.assertEqual(request["max_output_tokens"], 512)
+        capabilities_schema = request["text"]["format"]["schema"]["properties"]["capabilities"]
+        self.assertNotIn("uniqueItems", capabilities_schema)
 
     def test_accepts_medium_route(self) -> None:
         router = Router(self.FakeClient('{"route":"medium","answer":"","confidence":0.95,"capabilities":["computer"]}'), "small")
@@ -347,6 +398,17 @@ class RouterTests(unittest.TestCase):
 
         self.assertEqual(decision.route, "small")
         self.assertEqual(decision.capabilities, frozenset())
+
+    def test_duplicate_router_capabilities_fall_back_to_large(self) -> None:
+        router = Router(
+            self.FakeClient('{"route":"economy","answer":"","confidence":0.95,"capabilities":["web","web"]}'),
+            "small",
+        )
+
+        decision = router.decide("latest news", {})
+
+        self.assertEqual(decision.route, "large")
+        self.assertEqual(decision.capabilities, frozenset({"web", "computer"}))
 
     def test_agent_returns_small_answer_without_calling_large_model(self) -> None:
         class UnusedClient:

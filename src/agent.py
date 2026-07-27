@@ -44,6 +44,7 @@ approval request when one is required.
 
 
 WEB_SEARCH_TOOL = {"type": "web_search"}
+RESPONSE_ONLY_ITEM_FIELDS = frozenset({"created_by", "status"})
 
 
 ApprovalCallback = Callable[[str, str], bool]
@@ -396,6 +397,7 @@ class Agent:
             for _ in range(12):
                 phase = "tool_loop" if computer is not None else "answer"
                 LOGGER.info("model request turn_id=%s phase=%s model=%s iteration=%s", turn_id, phase, selected_model, _ + 1)
+                session.input_items[:] = [_replayable_input_item(item) for item in session.input_items]
                 request: dict[str, Any] = {
                     "model": selected_model,
                     "instructions": instructions,
@@ -569,16 +571,19 @@ def _env_choice(name: str, default: str, choices: set[str]) -> str:
 def _output_items(response: Any) -> list[dict[str, Any]]:
     """Convert response output into input items accepted by the next request.
 
-    The Responses API returns some output-only metadata (notably ``status`` on
-    hosted tool calls).  Those fields are not valid when the output item is
-    supplied back as conversation input, so strip them at the top level while
-    preserving the rest of the item.
+    The Responses API returns top-level server metadata that is not accepted
+    when the output item is supplied back as conversation input.  Normalize
+    each item through the same boundary sanitizer used before every request.
     """
-    items: list[dict[str, Any]] = []
-    for item in response.output:
-        dumped = item.model_dump() if hasattr(item, "model_dump") else item
-        if isinstance(dumped, dict):
-            dumped = dict(dumped)
-            dumped.pop("status", None)
-        items.append(dumped)
-    return items
+    return [_replayable_input_item(item) for item in response.output]
+
+
+def _replayable_input_item(item: Any) -> dict[str, Any]:
+    """Return a request-safe copy of one stored Responses API item."""
+    dumped = item.model_dump() if hasattr(item, "model_dump") else item
+    if not isinstance(dumped, dict):
+        raise TypeError("Responses API items must serialize to dictionaries")
+    replayable = dict(dumped)
+    for field in RESPONSE_ONLY_ITEM_FIELDS:
+        replayable.pop(field, None)
+    return replayable

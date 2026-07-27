@@ -49,7 +49,6 @@ ROUTER_SCHEMA = {
         "capabilities": {
             "type": "array",
             "items": {"type": "string", "enum": ["web", "computer"]},
-            "uniqueItems": True,
         },
     },
     "required": ["route", "answer", "confidence", "capabilities"],
@@ -105,7 +104,11 @@ class Router:
             capabilities = data.get("capabilities")
             if route not in {"small", "economy", "medium", "large"} or not isinstance(answer, str):
                 raise ValueError("invalid route response")
-            if not isinstance(capabilities, list) or any(value not in {"web", "computer"} for value in capabilities):
+            if (
+                not isinstance(capabilities, list)
+                or any(value not in {"web", "computer"} for value in capabilities)
+                or len(capabilities) != len(set(capabilities))
+            ):
                 raise ValueError("invalid route capabilities")
             if not 0 <= confidence <= 1:
                 raise ValueError("invalid route confidence")
