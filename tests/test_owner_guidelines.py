@@ -6,6 +6,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OwnerGuidelineTests(unittest.TestCase):
+    def test_agent_prompt_identifies_agent_as_cornelio(self) -> None:
+        source = (ROOT / "src/agent.py").read_text(encoding="utf-8")
+        self.assertIn("Your name is Cornelio", source)
+        self.assertIn("identify yourself as Cornelio", source)
+
+    def test_router_prompt_identifies_agent_as_cornelio(self) -> None:
+        source = (ROOT / "src/router.py").read_text(encoding="utf-8")
+        self.assertIn("agent's name is Cornelio", source)
+        self.assertIn("answer Cornelio", source)
+
     def test_agent_prompt_identifies_owner_as_julian(self) -> None:
         source = (ROOT / "src/agent.py").read_text(encoding="utf-8")
         self.assertIn("owner's name is Julián", source)
