@@ -10,11 +10,15 @@ class OwnerGuidelineTests(unittest.TestCase):
         source = (ROOT / "src/agent.py").read_text(encoding="utf-8")
         self.assertIn("owner's name is Daniel", source)
         self.assertIn("call him Daniel", source)
+        self.assertNotIn("owner's name is Julián", source)
+        self.assertNotIn("call him Julián", source)
 
     def test_router_prompt_identifies_owner_as_daniel(self) -> None:
         source = (ROOT / "src/router.py").read_text(encoding="utf-8")
         self.assertIn("owner's name is Daniel", source)
         self.assertIn("call him Daniel", source)
+        self.assertNotIn("owner's name is Julián", source)
+        self.assertNotIn("call him Julián", source)
 
     def test_task_start_acknowledgements_say_working(self) -> None:
         source = (ROOT / "src/telegram_bot.py").read_text(encoding="utf-8")

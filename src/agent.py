@@ -215,7 +215,8 @@ class Agent:
 
         computer = Computer(session.project)
         self_repository = _is_self_repository(session.project)
-        self_deploy_called = False
+        self_deploy_attempted = False
+        last_self_deploy_result = ""
         for _ in range(12):
             LOGGER.info("model request turn_id=%s phase=tool_loop model=%s iteration=%s", turn_id, self.model, _ + 1)
             response = self.client.responses.create(
@@ -232,17 +233,18 @@ class Agent:
             for call in calls:
                 try:
                     if call.name == "self_deploy":
-                        if self_deploy_called:
+                        if self_deploy_attempted and not _self_deploy_retryable(last_self_deploy_result):
                             result = "self-deployment was already attempted in this turn; do not repeat it"
                             LOGGER.warning("self_deploy duplicate_blocked turn_id=%s", turn_id)
                         else:
-                            self_deploy_called = True
                             result = computer.call(
                                 call.name,
                                 json.loads(call.arguments),
                                 tool_approval,
                                 lambda: self_deploy(session.project, tool_approval),
                             )
+                            self_deploy_attempted = True
+                            last_self_deploy_result = result
                     else:
                         result = computer.call(
                             call.name,
@@ -278,6 +280,11 @@ def _requests_self_deploy(message: str) -> bool:
     )
 
 
+def _self_deploy_retryable(result: str) -> bool:
+    """Allow editing to continue after a deployment found no changes."""
+    return "self-deployment found no uncommitted changes" in result
+
+
 def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | None) -> str:
     """Test, publish, and request a rebuild of the configured self repository."""
     LOGGER.info("self_deploy started project=%s", project.name)
@@ -302,6 +309,9 @@ def self_deploy(project: ProjectContext, approval_callback: ApprovalCallback | N
     diff = subprocess.run(["git", "diff", "--stat", "HEAD"], cwd=project.path, capture_output=True, text=True, timeout=30)
     if diff.returncode:
         return json.dumps({"stage": "diff", "exit_code": diff.returncode, "error": diff.stderr})
+    if not diff.stdout.strip():
+        LOGGER.info("self_deploy stopped stage=diff reason=no_changes")
+        return "self-deployment found no uncommitted changes; continue editing before retrying deployment"
     if not approval_callback("self_deploy_commit", f"commit self-repository changes after tests passed:\n{diff.stdout[-3000:]}"):
         LOGGER.info("self_deploy stopped stage=commit_approval")
         return "deployment stopped; commit was not approved"

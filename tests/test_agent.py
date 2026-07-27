@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 
-from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, _requests_self_deploy, tool_definitions
+from agent import Agent, AgentSession, Computer, ProjectContext, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
 from router import RouteDecision, Router
 
 
@@ -66,6 +66,10 @@ class ComputerToolTests(unittest.TestCase):
         self.assertTrue(_requests_self_deploy("prepare a self-deployment"))
         self.assertTrue(_requests_self_deploy("change the prompt and redeploy"))
         self.assertFalse(_requests_self_deploy("update the README and run tests"))
+
+    def test_self_deploy_can_retry_after_no_changes(self) -> None:
+        self.assertTrue(_self_deploy_retryable("self-deployment found no uncommitted changes; continue editing before retrying deployment"))
+        self.assertFalse(_self_deploy_retryable('{"stage":"push","exit_code":1}'))
 
     def test_self_deploy_callback_is_available_only_as_a_tool_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
