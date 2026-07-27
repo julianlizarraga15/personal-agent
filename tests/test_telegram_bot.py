@@ -1,3 +1,5 @@
+import base64
+from io import BytesIO
 import json
 import os
 import tempfile
@@ -7,8 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
+from PIL import Image
+
 import telegram_bot
-from telegram_bot import ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, required_settings, run_docker_worker, workspace_project_path
+from telegram_bot import DEFAULT_IMAGE_PROMPT, ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, _validate_image, required_settings, run_docker_worker, workspace_project_path
 from usage import ModelUsage
 
 
@@ -247,6 +251,149 @@ class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(messages), 1)
 
 
+class ImageMessageTests(unittest.IsolatedAsyncioTestCase):
+    PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    STATIC_GIF = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+    ANIMATED_GIF = base64.b64decode(
+        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAAh+QQAAAAAACwAAAAAAQABAAACAQQAOw=="
+    )
+
+    def setUp(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    def tearDown(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    @staticmethod
+    def media(data: bytes, *, size: int | None = None, mime_type: str | None = None) -> SimpleNamespace:
+        downloaded = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(data)))
+        return SimpleNamespace(
+            file_size=len(data) if size is None else size,
+            mime_type=mime_type,
+            get_file=AsyncMock(return_value=downloaded),
+        )
+
+    @staticmethod
+    def update(message: SimpleNamespace, user_id: int = 42) -> SimpleNamespace:
+        return SimpleNamespace(effective_user=SimpleNamespace(id=user_id), effective_message=message)
+
+    async def test_photo_uses_largest_rendition_and_caption(self) -> None:
+        smaller = self.media(self.PNG)
+        largest = self.media(self.PNG)
+        message = SimpleNamespace(
+            photo=(smaller, largest),
+            document=None,
+            caption="Read this error",
+            reply_text=AsyncMock(),
+        )
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_agent", new_callable=AsyncMock
+        ) as run_agent:
+            await telegram_bot.image_message(self.update(message), SimpleNamespace())
+
+        smaller.get_file.assert_not_awaited()
+        largest.get_file.assert_awaited_once_with()
+        image = run_agent.await_args.kwargs["image"]
+        self.assertEqual((image.data, image.media_type, image.detail), (self.PNG, "image/png", "high"))
+        self.assertEqual(run_agent.await_args.args[2], "Read this error")
+
+    async def test_image_document_uses_default_prompt_and_detected_format(self) -> None:
+        document = self.media(self.STATIC_GIF, mime_type="image/jpeg")
+        message = SimpleNamespace(photo=(), document=document, caption="  ", reply_text=AsyncMock())
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_agent", new_callable=AsyncMock
+        ) as run_agent:
+            await telegram_bot.image_message(self.update(message), SimpleNamespace())
+
+        image = run_agent.await_args.kwargs["image"]
+        self.assertEqual(image.media_type, "image/gif")
+        self.assertEqual(run_agent.await_args.args[2], DEFAULT_IMAGE_PROMPT)
+
+    async def test_declared_oversize_image_is_rejected_before_download(self) -> None:
+        photo = self.media(self.PNG, size=11)
+        message = SimpleNamespace(photo=(photo,), document=None, caption=None, reply_text=AsyncMock())
+
+        with patch.dict(
+            os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42", "TELEGRAM_MAX_IMAGE_BYTES": "10"}
+        ), patch("telegram_bot._run_agent", new_callable=AsyncMock) as run_agent:
+            await telegram_bot.image_message(self.update(message), SimpleNamespace())
+
+        photo.get_file.assert_not_awaited()
+        run_agent.assert_not_awaited()
+        self.assertIn("too large", message.reply_text.await_args.args[0].lower())
+
+    async def test_actual_oversize_image_is_rejected_after_download(self) -> None:
+        photo = self.media(self.PNG, size=1)
+        message = SimpleNamespace(photo=(photo,), document=None, caption=None, reply_text=AsyncMock())
+
+        with patch.dict(
+            os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42", "TELEGRAM_MAX_IMAGE_BYTES": "10"}
+        ), patch("telegram_bot._run_agent", new_callable=AsyncMock) as run_agent:
+            await telegram_bot.image_message(self.update(message), SimpleNamespace())
+
+        run_agent.assert_not_awaited()
+        self.assertIn("too large", message.reply_text.await_args.args[0].lower())
+
+    async def test_invalid_or_animated_image_is_rejected(self) -> None:
+        for payload in (b"not-an-image", self.ANIMATED_GIF):
+            with self.subTest(payload=payload):
+                message = SimpleNamespace(
+                    photo=(self.media(payload),), document=None, caption=None, reply_text=AsyncMock()
+                )
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                    "telegram_bot._run_agent", new_callable=AsyncMock
+                ) as run_agent:
+                    await telegram_bot.image_message(self.update(message), SimpleNamespace())
+                run_agent.assert_not_awaited()
+                self.assertIn("couldn’t use that image", message.reply_text.await_args.args[0].lower())
+
+    async def test_download_failure_is_reported_without_starting_agent(self) -> None:
+        photo = self.media(self.PNG)
+        photo.get_file.side_effect = RuntimeError("telegram unavailable")
+        message = SimpleNamespace(photo=(photo,), document=None, caption=None, reply_text=AsyncMock())
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_agent", new_callable=AsyncMock
+        ) as run_agent:
+            await telegram_bot.image_message(self.update(message), SimpleNamespace())
+
+        run_agent.assert_not_awaited()
+        self.assertIn("download", message.reply_text.await_args.args[0].lower())
+
+    async def test_unauthorized_and_busy_images_are_not_downloaded(self) -> None:
+        for user_id, running in ((7, False), (42, True)):
+            with self.subTest(user_id=user_id, running=running):
+                photo = self.media(self.PNG)
+                message = SimpleNamespace(photo=(photo,), document=None, caption=None, reply_text=AsyncMock())
+                if running:
+                    telegram_bot.SESSIONS[42] = ConversationSession(running=True)
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                    "telegram_bot._run_agent", new_callable=AsyncMock
+                ) as run_agent:
+                    await telegram_bot.image_message(self.update(message, user_id), SimpleNamespace())
+                photo.get_file.assert_not_awaited()
+                run_agent.assert_not_awaited()
+                if running:
+                    self.assertIn("still working", message.reply_text.await_args.args[0].lower())
+
+    def test_image_validation_accepts_supported_static_formats(self) -> None:
+        expected_types = {
+            "GIF": "image/gif",
+            "JPEG": "image/jpeg",
+            "PNG": "image/png",
+            "WEBP": "image/webp",
+        }
+        for image_format, media_type in expected_types.items():
+            with self.subTest(image_format=image_format):
+                buffer = BytesIO()
+                Image.new("RGB", (1, 1), "white").save(buffer, format=image_format)
+                self.assertEqual(_validate_image(buffer.getvalue()), media_type)
+
+
 class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         telegram_bot.SESSIONS.clear()
@@ -365,7 +512,7 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         application.run_polling.assert_called_once_with(allowed_updates=("message", "message_reaction"))
 
     def test_application_registers_reaction_handler(self) -> None:
-        from telegram.ext import CommandHandler, MessageReactionHandler
+        from telegram.ext import CommandHandler, MessageHandler, MessageReactionHandler
 
         application = telegram_bot.build_application(
             {"TELEGRAM_BOT_TOKEN": "123:token", "TELEGRAM_ALLOWED_USER_ID": "42"}
@@ -377,6 +524,8 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(reaction_handlers[0].callback, telegram_bot.approval_reaction)
         command_callbacks = {handler.callback for handler in handlers if isinstance(handler, CommandHandler)}
         self.assertIn(telegram_bot.usage_command, command_callbacks)
+        message_callbacks = {handler.callback for handler in handlers if isinstance(handler, MessageHandler)}
+        self.assertIn(telegram_bot.image_message, message_callbacks)
 
 
 if __name__ == "__main__":

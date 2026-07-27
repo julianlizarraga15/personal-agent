@@ -7,7 +7,7 @@ name = "repository-worker"
 version = "0.1.0"
 description = "Minimal Dockerized worker for inspecting a Git repository"
 requires-python = ">=3.11"
-dependencies = ["openai>=2.48,<3", "python-telegram-bot>=21,<22"]
+dependencies = ["openai>=2.48,<3", "Pillow>=11,<13", "python-telegram-bot>=21,<22"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]

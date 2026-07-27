@@ -31,6 +31,7 @@
 - Codex cannot start: verify the CLI and its authentication are available inside the worker runtime.
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the project exists under `workspace/`, the OpenAI API key is configured, and the bot image has been rebuilt after dependency changes.
+- Image rejected: use a JPEG, PNG, WEBP, or non-animated GIF under `TELEGRAM_MAX_IMAGE_BYTES` (10 MiB by default). Resend the image for later visual follow-ups because image bytes are not retained after the turn.
 - Unexpected API cost: inspect per-response usage logs and `/usage`, confirm the intended route/model, and check whether repeated file or command output crossed the compaction or high-usage threshold.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 - State storage full/unavailable: free space or restore the mount, then restart the deployer. It retains the active request when failure state cannot be persisted and resumes it after restart.

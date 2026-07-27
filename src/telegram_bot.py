@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from io import BytesIO
 import json
 import logging
 import os
@@ -11,11 +12,14 @@ import subprocess
 import threading
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from agent import Agent, AgentSession, ProjectContext
+from PIL import Image, UnidentifiedImageError
+
+from agent import Agent, AgentSession, ImageInput, ProjectContext
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 
 
@@ -27,6 +31,15 @@ STATUS_MESSAGES = {
     "running tests": "Running tests…",
     "pushing branch": "Pushing branch…",
     "finished": "Finished.",
+}
+
+DEFAULT_IMAGE_PROMPT = "Describe this image and call out any visible text, errors, or actionable details."
+DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+IMAGE_MEDIA_TYPES = {
+    "GIF": "image/gif",
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
 }
 
 
@@ -456,7 +469,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if user is None or message is None or not _is_allowed(user.id):
         return
     await message.reply_text(
-        "Chat normally to work in the configured computer workspace, or use /project <directory-name> to narrow the context.\n"
+        "Chat normally or send an image to work in the configured computer workspace; use /project <directory-name> to narrow the context.\n"
         "/new starts over, /stop forgets the session, /usage shows model cost, /pending shows deployment state, and /run <url> <task> runs one task.\n"
         "For requested edits or Git actions, react 👍/👎 to the approval prompt or use /approve <id> or /reject <id>."
     )
@@ -471,19 +484,105 @@ async def conversational_message(update: Update, context: ContextTypes.DEFAULT_T
     if user is None or message is None or not _is_allowed(user.id):
         return
     session = session_for(user.id)
-    if session.running:
-        pending = session.pending_approval
-        if pending is not None:
-            await message.reply_text(
-                f"An approval is pending ({pending.request_id}). React 👍/👎 to its prompt or reply /approve {pending.request_id} or /reject {pending.request_id}."
-            )
-        else:
-            await message.reply_text("I’m still working on the previous request.")
+    if await _reply_if_busy(message, session):
         return
     if session.project is None:
         await _run_agent(message, session, message.text or "", user.id)
         return
     await _run_agent(message, session, message.text or "", user.id)
+
+
+async def image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Download and validate one Telegram image before running a vision turn."""
+
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    session = session_for(user.id)
+    if await _reply_if_busy(message, session):
+        return
+
+    photos = getattr(message, "photo", ()) or ()
+    media = photos[-1] if photos else getattr(message, "document", None)
+    if media is None:
+        return
+    max_bytes = _max_image_bytes()
+    declared_size = getattr(media, "file_size", None)
+    if isinstance(declared_size, int) and declared_size > max_bytes:
+        await message.reply_text(f"That image is too large. The limit is {max_bytes // (1024 * 1024)} MiB.")
+        return
+
+    try:
+        telegram_file = await media.get_file()
+        data = bytes(await telegram_file.download_as_bytearray())
+    except Exception as exc:
+        LOGGER.warning("image download failed user_id=%s error_type=%s", user.id, type(exc).__name__)
+        await message.reply_text("I couldn’t download that image from Telegram. Please try sending it again.")
+        return
+    if len(data) > max_bytes:
+        await message.reply_text(f"That image is too large. The limit is {max_bytes // (1024 * 1024)} MiB.")
+        return
+
+    try:
+        media_type = _validate_image(data)
+    except ValueError as exc:
+        LOGGER.warning("image rejected user_id=%s reason=%s", user.id, exc)
+        await message.reply_text(
+            "I couldn’t use that image. Send a valid JPEG, PNG, WEBP, or non-animated GIF within the size limit."
+        )
+        return
+
+    prompt = (getattr(message, "caption", None) or "").strip() or DEFAULT_IMAGE_PROMPT
+    await _run_agent(message, session, prompt, user.id, image=ImageInput(data, media_type))
+
+
+async def _reply_if_busy(message: object, session: ConversationSession) -> bool:
+    if not session.running:
+        return False
+    pending = session.pending_approval
+    if pending is not None:
+        await message.reply_text(  # type: ignore[attr-defined]
+            f"An approval is pending ({pending.request_id}). React 👍/👎 to its prompt or reply /approve {pending.request_id} or /reject {pending.request_id}."
+        )
+    else:
+        await message.reply_text("I’m still working on the previous request.")  # type: ignore[attr-defined]
+    return True
+
+
+def _max_image_bytes() -> int:
+    raw = os.environ.get("TELEGRAM_MAX_IMAGE_BYTES")
+    if raw is None:
+        return DEFAULT_MAX_IMAGE_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        LOGGER.warning("invalid TELEGRAM_MAX_IMAGE_BYTES; using default")
+        return DEFAULT_MAX_IMAGE_BYTES
+    if value <= 0:
+        LOGGER.warning("non-positive TELEGRAM_MAX_IMAGE_BYTES; using default")
+        return DEFAULT_MAX_IMAGE_BYTES
+    return value
+
+
+def _validate_image(data: bytes) -> str:
+    """Return the actual supported media type or reject unsafe image data."""
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as candidate:
+                image_format = candidate.format
+                if getattr(candidate, "is_animated", False) or getattr(candidate, "n_frames", 1) > 1:
+                    raise ValueError("animated images are unsupported")
+                candidate.verify()
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning, UnidentifiedImageError, OSError) as exc:
+        raise ValueError("invalid or unsafe image") from exc
+    try:
+        return IMAGE_MEDIA_TYPES[str(image_format)]
+    except KeyError as exc:
+        raise ValueError("unsupported image format") from exc
 
 
 def _is_allowed(user_id: int) -> bool:
@@ -534,7 +633,14 @@ async def _run_task(message: object, session: ConversationSession, task: str, us
         session.running = False
 
 
-async def _run_agent(message: object, session: ConversationSession, task: str, user_id: int) -> None:
+async def _run_agent(
+    message: object,
+    session: ConversationSession,
+    task: str,
+    user_id: int,
+    *,
+    image: ImageInput | None = None,
+) -> None:
     if session.running:
         await message.reply_text("I’m still working on the previous request.")  # type: ignore[attr-defined]
         return
@@ -594,6 +700,7 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             request_approval,
             turn_id,
             restart_notice,
+            image,
         )
         queued = _queued_deployment(response)
         if SESSIONS.get(user_id) is session:
@@ -688,6 +795,7 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
             message_reaction_types=MessageReactionHandler.MESSAGE_REACTION_UPDATED,
         )
     )
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, image_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, conversational_message))
     return application
 

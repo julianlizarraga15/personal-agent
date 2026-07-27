@@ -6,7 +6,7 @@ Last updated: 2026-07-27
 
 - Repository setup and initial project structure are present.
 - A model-backed conversational agent prototype is present in `src/agent.py`.
-- Telegram integration can handle ordinary messages in the default workspace, `/project`, `/new`, `/stop`, `/usage`, and legacy `/run`.
+- Telegram integration can handle ordinary messages, validated image turns, `/project`, `/new`, `/stop`, `/usage`, and legacy `/run` in the default workspace.
 - File writes and dedicated Git commit/push actions now pause for Telegram approval via 👍/👎 reactions on the exact prompt or `/approve <id>` and `/reject <id>`.
 - The conversational agent now has the OpenAI Responses API hosted `web_search` tool for current external information and source citations.
 - A configurable cost-aware router uses GPT-5 nano for high-confidence simple answers, Luna for ordinary reasoning/web work, Terra for routine computer work, and Sol for difficult, ambiguous, high-stakes, or deployment work.
@@ -26,12 +26,13 @@ Last updated: 2026-07-27
 
 ## Last stopping point
 
-- Cost-aware model execution and usage reporting are published to `main` and deployed; the replacement bot reached Docker health.
+- Telegram image understanding is implemented, published to `main`, and deployed; a live end-to-end image exchange has not yet been exercised.
 
 ## Next steps
 
 - Continue normal product work; update the stable deployer image manually only when deployment infrastructure changes.
 - Exercise `/usage`, each model route, compaction, and a bounded file-read continuation in a non-sensitive live Telegram session.
+- Send a non-sensitive photo and image document through the live bot after deployment, including a captionless image and an oversize/unsupported rejection case.
 - Make the model provider configurable (`OPENAI_BASE_URL`, API key, and model), keeping direct OpenAI as the default and adding OpenRouter as an optional backend.
 - Verify the bot end-to-end with Docker and Telegram using a non-sensitive workspace checkout.
 - Move tool execution behind a persistent sandbox container and remove the bot's direct Docker-socket dependency when practical.
@@ -47,10 +48,12 @@ Last updated: 2026-07-27
 - Approval is exact-action, single-pending-request, bound to its Telegram prompt for reactions, and expires after five minutes; text commands remain available.
 - Cost estimates use standard OpenAI short-context prices as of 2026-07-27; provider billing remains authoritative, and custom model prices are reported as unknown.
 - The high-usage threshold is advisory: it records one warning per expensive turn but does not stop an active task.
+- Image turns accept one photo or supported image document up to 10 MiB by default, use high-detail vision, and discard image bytes after the current turn.
 
 ## Validation
 
-- Current validation: 88 unit tests pass via `python -m pytest` in a temporary environment, including cost-aware routing, request controls, compaction pruning, bounded tools, token/cost accounting, `/usage`, session resets, reaction authorization, and deployment behavior. Python compilation and `git diff --check` also pass.
+- Current validation: 100 unit tests pass via `python -m pytest` in a temporary environment, including image routing, multimodal request shape, current-turn cleanup, Telegram download/validation failures, supported formats, cost-aware routing, request controls, compaction pruning, bounded tools, token/cost accounting, `/usage`, session resets, reaction authorization, and deployment behavior. Python compilation and `git diff --check` also pass.
+- The image-capable bot image builds successfully with Pillow, and its production module import succeeds; the image path has not yet been exercised against live Telegram or OpenAI services.
 - The cost-aware bot image built successfully and the replacement bot reached Docker health; a live `/usage` exchange and model call have not yet been exercised.
 - Earlier live deployment validation covered a queued deployment and controlled startup-failure rollback; the bot and deployer containers were healthy at that stopping point.
 - The reaction change was pushed to `origin/main`; the bot image built successfully, the replacement bot reached Docker health, and the persistent deployer remained running. A live Telegram reaction exchange and model call have not been exercised.

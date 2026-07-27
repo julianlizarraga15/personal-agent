@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import sys
@@ -11,7 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from agent import Agent, AgentSession, Computer, ProjectContext, _is_non_fast_forward, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
+from agent import Agent, AgentSession, Computer, ImageInput, ProjectContext, _is_non_fast_forward, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
 from router import RouteDecision, Router
 from usage import ModelUsage
 
@@ -161,6 +162,129 @@ class ComputerToolTests(unittest.TestCase):
         output = _output_items(SimpleNamespace(output=[FakeOutputItem()]))
 
         self.assertEqual(output, [{"type": "web_search_call", "id": "call_1"}])
+
+
+class ImageInputTests(unittest.TestCase):
+    class EconomyRouter:
+        def decide(self, message, context):
+            return RouteDecision("economy", confidence=0.95)
+
+    def test_agent_sends_multimodal_image_at_high_detail_then_scrubs_it(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.request = None
+
+            def create(self, **kwargs):
+                self.request = copy.deepcopy(kwargs)
+                return SimpleNamespace(output=[], output_text="vision answer")
+
+        client = SimpleNamespace(responses=FakeResponses())
+        session = AgentSession()
+
+        result = Agent(client=client, router=self.EconomyRouter()).respond(
+            session,
+            "Read the error",
+            image=ImageInput(b"image-bytes", "image/jpeg"),
+        )
+
+        self.assertEqual(result, "vision answer")
+        content = client.responses.request["input"][-1]["content"]
+        self.assertEqual(content[0], {"type": "input_text", "text": "Read the error"})
+        self.assertEqual(
+            content[1],
+            {
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64,aW1hZ2UtYnl0ZXM=",
+                "detail": "high",
+            },
+        )
+        self.assertNotIn("context_management", client.responses.request)
+        self.assertNotIn("input_image", json.dumps(session.input_items))
+        self.assertIn("no longer available", json.dumps(session.input_items))
+
+    def test_image_turn_cannot_return_a_text_only_small_router_answer(self) -> None:
+        class SmallRouter:
+            def __init__(self) -> None:
+                self.message = None
+
+            def decide(self, message, context):
+                self.message = message
+                return RouteDecision("small", "I cannot see it", 0.99)
+
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                return SimpleNamespace(output=[], output_text="I can see it")
+
+        router = SmallRouter()
+        client = SimpleNamespace(responses=FakeResponses())
+
+        result = Agent(client=client, router=router).respond(
+            AgentSession(),
+            "What is this?",
+            image=ImageInput(b"image", "image/png"),
+        )
+
+        self.assertEqual(result, "I can see it")
+        self.assertEqual(client.responses.calls, 1)
+        self.assertIn("image attached", router.message.lower())
+
+    def test_image_remains_available_through_the_current_tool_loop(self) -> None:
+        class FunctionCall:
+            type = "function_call"
+            name = "git_status"
+            arguments = "{}"
+            call_id = "call-1"
+
+            def model_dump(self):
+                return {"type": self.type, "name": self.name, "arguments": self.arguments, "call_id": self.call_id}
+
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.inputs = []
+
+            def create(self, **kwargs):
+                self.inputs.append(copy.deepcopy(kwargs["input"]))
+                if len(self.inputs) == 1:
+                    return SimpleNamespace(output=[FunctionCall()], output_text="")
+                return SimpleNamespace(output=[], output_text="done")
+
+        class MediumRouter:
+            def decide(self, message, context):
+                return RouteDecision("medium", confidence=0.95, capabilities=frozenset({"computer"}))
+
+        client = SimpleNamespace(responses=FakeResponses())
+        with tempfile.TemporaryDirectory() as directory:
+            session = AgentSession(ProjectContext("demo", Path(directory)))
+            result = Agent(client=client, router=MediumRouter()).respond(
+                session,
+                "Use this screenshot",
+                image=ImageInput(b"image", "image/png"),
+            )
+
+        self.assertEqual(result, "done")
+        self.assertEqual(len(client.responses.inputs), 2)
+        self.assertTrue(all("input_image" in json.dumps(items) for items in client.responses.inputs))
+        self.assertNotIn("input_image", json.dumps(session.input_items))
+
+    def test_image_is_scrubbed_when_the_model_request_fails(self) -> None:
+        class FailingResponses:
+            def create(self, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+        session = AgentSession()
+        with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
+            Agent(client=SimpleNamespace(responses=FailingResponses()), router=self.EconomyRouter()).respond(
+                session,
+                "Analyze",
+                image=ImageInput(b"image", "image/webp"),
+            )
+
+        self.assertNotIn("input_image", json.dumps(session.input_items))
+        self.assertIn("no longer available", json.dumps(session.input_items))
 
 
 class RouterTests(unittest.TestCase):
