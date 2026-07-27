@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from agent import Agent, AgentSession, ProjectContext
-from deployment import DeploymentManifest
+from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 
 
 LOGGER = logging.getLogger(__name__)
@@ -344,7 +344,18 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         lines.append("approval delivery failed but request remains pending" if session.approval_delivery_failed else f"reply /approve {request.request_id} or /reject {request.request_id}")
     manifest = DeploymentManifest(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state")).read()
     if manifest and manifest.get("status") not in {None, "healthy"}:
-        lines.append(f"deployment: {manifest.get('status')} (id {manifest.get('deployment_id', 'unknown')})")
+        status = str(manifest.get("status"))
+        labels = {
+            "queued": "queued for the deployment controller",
+            "building": "building the new bot image",
+            "restarting": "restart in progress",
+            "verifying": "verifying startup stability",
+            "awaiting_report": "healthy; completion notification pending",
+            "rollback_completed": "rollback completed",
+            "rollback_failed": "rollback failed",
+            "failed": "deployment failed",
+        }
+        lines.append(f"deployment: {labels.get(status, status)} (id {manifest.get('deployment_id', 'unknown')})")
         if manifest.get("error"):
             lines.append(f"detail: {str(manifest['error'])[-500:]}")
     await message.reply_text("\n".join(lines) if lines else "No approval or deployment is pending.")
@@ -375,7 +386,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await message.reply_text(
         "Chat normally to work in the configured computer workspace, or use /project <directory-name> to narrow the context.\n"
-        "/new starts over, /stop forgets the session, and /run <url> <task> runs one task.\n"
+        "/new starts over, /stop forgets the session, /pending shows deployment state, and /run <url> <task> runs one task.\n"
         "For requested edits or Git actions, use /approve <id> or /reject <id>."
     )
 
@@ -507,8 +518,13 @@ async def _run_agent(message: object, session: ConversationSession, task: str, u
             turn_id,
             restart_notice,
         )
+        queued = _queued_deployment(response)
         if SESSIONS.get(user_id) is session:
-            await message.reply_text(response or "Done.")  # type: ignore[attr-defined]
+            if queued:
+                await message.reply_text(f"Deployment {queued['deployment_id']} queued for commit {queued['commit'][:12]}.")  # type: ignore[attr-defined]
+                asyncio.create_task(_monitor_deployment(message.reply_text))  # type: ignore[attr-defined]
+            else:
+                await message.reply_text(response or "Done.")  # type: ignore[attr-defined]
         LOGGER.info("turn finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
     except Exception as exc:
         LOGGER.exception("turn failed turn_id=%s elapsed_seconds=%.1f error_type=%s", turn_id, time.monotonic() - started, type(exc).__name__)
@@ -524,20 +540,53 @@ async def _send_pending_statuses(message: object, statuses: asyncio.Queue[str]) 
         await message.reply_text(STATUS_MESSAGES.get(status, status))  # type: ignore[attr-defined]
 
 
-async def report_startup_deployment(application: object) -> None:
-    manifest = DeploymentManifest(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state"))
-    state = manifest.read()
-    if not state or state.get("status") == "healthy":
-        return
-    status = state.get("status")
-    text = ("Deployment completed after restart." if status == "restarting" else
-            "Deployment restart failed; rollback completed." if status == "rollback_completed" else
-            f"Deployment recovered with state: {status}.")
+def _queued_deployment(response: str) -> dict | None:
     try:
-        await application.bot.send_message(chat_id=int(os.environ["TELEGRAM_ALLOWED_USER_ID"]), text=text)  # type: ignore[attr-defined]
-        manifest.transition("healthy", recovered_from=status)
-    except Exception:
-        LOGGER.exception("deployment startup report failed status=%s", status)
+        value = json.loads(response)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) and value.get("status") == "queued" else None
+
+
+def _deployment_report(state: dict) -> str:
+    status = state.get("status")
+    deployment_id = state.get("deployment_id", "unknown")
+    commit = str(state.get("commit", "unknown"))[:12]
+    if status == "awaiting_report":
+        return f"Deployment {deployment_id} completed successfully at commit {commit}."
+    if status == "rollback_completed":
+        return f"Deployment {deployment_id} failed startup verification; rollback completed successfully."
+    if status == "rollback_failed":
+        return f"Deployment {deployment_id} failed and automatic rollback also failed. Manual recovery is required."
+    return f"Deployment {deployment_id} failed before restart: {str(state.get('error', 'unknown error'))[-500:]}"
+
+
+async def _monitor_deployment(send: Callable[[str], object], timeout_seconds: int = 180) -> None:
+    manifest = DeploymentManifest(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state"))
+    for _ in range(timeout_seconds):
+        state = manifest.read()
+        if state and state.get("status") in TERMINAL_REPORT_STATUSES and not state.get("reported_at"):
+            status = str(state["status"])
+            try:
+                result = send(_deployment_report(state))
+                if hasattr(result, "__await__"):
+                    await result
+                if status in {"awaiting_report", "rollback_completed"}:
+                    manifest.transition("healthy", recovered_from=status, reported_at=time.time())
+                else:
+                    manifest.write(reported_at=time.time())
+            except Exception:
+                LOGGER.exception("deployment report failed status=%s", status)
+            return
+        await asyncio.sleep(1)
+
+
+async def report_startup_deployment(application: object) -> None:
+    Path("/tmp/personal-agent-ready").touch()
+    application.create_task(  # type: ignore[attr-defined]
+        _monitor_deployment(lambda text: application.bot.send_message(chat_id=int(os.environ["TELEGRAM_ALLOWED_USER_ID"]), text=text)),  # type: ignore[attr-defined]
+        name="deployment-report",
+    )
 
 
 def build_application(environ: dict[str, str] | None = None) -> Application:

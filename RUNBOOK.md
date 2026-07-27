@@ -19,7 +19,8 @@
 - A successful legacy worker reports a `codex/*` branch, commit, and test status.
 - The conversational agent requires `OPENAI_API_KEY` and operates only inside the mounted `workspace/` directory.
 - The bot keeps the selected project and recent conversation in memory; restart the bot or use `/new` to clear it.
-- Self-deployment requires the repository at `workspace/personal-agent`. Set `HOST_WORKSPACE_DIR` to its absolute host path before starting Compose so the helper can recreate the service with the correct bind mount.
+- Self-deployment requires the repository at `workspace/personal-agent` and a running, healthy `deployer` service. `HOST_WORKSPACE_DIR`, `GIT_SSH_KEY_PATH`, and `GIT_KNOWN_HOSTS_PATH` must be absolute host paths so Compose can safely recreate the bot from inside the deployer.
+- Confirm controller availability with `docker compose ps deployer` and `/pending` before requesting deployment.
 
 ## Common failures
 
@@ -29,6 +30,7 @@
 - Codex cannot start: verify the CLI and its authentication are available inside the worker runtime.
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the project exists under `workspace/`, the OpenAI API key is configured, and the bot image has been rebuilt after dependency changes.
+- Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 
 ## Stop and recover
 
@@ -36,7 +38,16 @@ Stop services with `docker compose down`. Failed tasks should not publish a bran
 
 ## Self-deployment recovery
 
-When the agent is asked to modify itself, keep the checkout on `main`. It requests one approval for the complete operation, then tests the checkout, commits and pushes `main`, and asks the helper to rebuild and recreate the bot service. The helper tags the existing bot image as `personal-agent-bot:rollback-<UTC timestamp>` before rebuilding. If the replacement does not start, retag the most recent rollback image as `personal-agent-bot:latest`, then run `docker compose up -d bot`.
+When the agent is asked to modify itself, keep the checkout on `main`. One approval covers tests, direct publication, queueing, rebuild, and restart. The persistent deployer tags the current image, rebuilds only the bot, verifies Docker health for a stability window, and rolls back automatically when startup fails. `/pending` reads the durable manifest even when conversational state has been lost.
+
+Deployment-controller changes are host-managed. From the outer deployment checkout, build the separate controller image first, then recreate the bot from the live nested checkout:
+
+```bash
+docker compose --env-file .env -f workspace/personal-agent/docker-compose.yml up -d --build --force-recreate deployer
+docker compose --env-file .env -f workspace/personal-agent/docker-compose.yml up -d --build --force-recreate bot
+```
+
+Do not recreate the deployer during ordinary self-deployment. If automatic rollback reports `rollback_failed`, inspect the manifest and deployer logs, retag the recorded `rollback_image` as `personal-agent-bot:latest`, and recreate only `bot` with the same Compose file.
 
 ## Maintenance checklist
 

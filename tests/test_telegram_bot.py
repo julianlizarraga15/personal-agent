@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from telegram_bot import ConversationSession, WorkerExecutionError, required_settings, run_docker_worker, workspace_project_path
+from telegram_bot import ConversationSession, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, required_settings, run_docker_worker, workspace_project_path
 
 
 class FakeProcess:
@@ -145,6 +145,49 @@ class TelegramWorkerTests(unittest.TestCase):
         with patch("telegram_bot.subprocess.Popen", return_value=FakeProcess(["worker output\n"], 1, "traceback")):
             with self.assertRaisesRegex(WorkerExecutionError, r"worker output[\s\S]*traceback"):
                 run_docker_worker("repo", "task", image="worker:latest")
+
+    def test_queued_deployment_protocol_is_parsed(self) -> None:
+        queued = _queued_deployment('{"status":"queued","deployment_id":"d1","commit":"abc"}')
+        self.assertEqual(queued["deployment_id"], "d1")
+        self.assertIsNone(_queued_deployment("not json"))
+
+    def test_deployment_report_distinguishes_success_and_rollback(self) -> None:
+        self.assertIn("completed successfully", _deployment_report({"status": "awaiting_report", "deployment_id": "d1", "commit": "abc"}))
+        self.assertIn("rollback completed", _deployment_report({"status": "rollback_completed", "deployment_id": "d1"}))
+
+
+class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_success_notification_marks_manifest_healthy(self) -> None:
+        messages = []
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": directory}):
+            from deployment import DeploymentManifest
+
+            manifest = DeploymentManifest(directory)
+            manifest.write(status="awaiting_report", deployment_id="d1", commit="abc")
+
+            async def send(message):
+                messages.append(message)
+
+            await _monitor_deployment(send, timeout_seconds=1)
+            self.assertEqual(manifest.read()["status"], "healthy")
+        self.assertIn("completed successfully", messages[0])
+
+    async def test_failed_notification_is_reported_once_but_remains_failed(self) -> None:
+        messages = []
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"DEPLOYMENT_STATE_DIR": directory}):
+            from deployment import DeploymentManifest
+
+            manifest = DeploymentManifest(directory)
+            manifest.write(status="failed", deployment_id="d1", commit="abc", error="build broke")
+
+            async def send(message):
+                messages.append(message)
+
+            await _monitor_deployment(send, timeout_seconds=1)
+            state = manifest.read()
+            self.assertEqual(state["status"], "failed")
+            self.assertIn("reported_at", state)
+        self.assertIn("build broke", messages[0])
 
 
 if __name__ == "__main__":

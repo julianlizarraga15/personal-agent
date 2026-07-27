@@ -18,7 +18,6 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       AGENT_WORKSPACE_ROOT: /workspace/personal-agent
       SELF_REPOSITORY_PATH: /workspace/personal-agent
-      SELF_DEPLOY_HELPER: /usr/local/bin/restart-personal-agent
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
       DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
       BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
@@ -32,8 +31,37 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
-      - ./deploy/restart-personal-agent.sh:/usr/local/bin/restart-personal-agent:ro
       - ${GIT_SSH_KEY_PATH:-./secrets/personal-agent-github}:/run/secrets/github_key:ro
       - ${GIT_KNOWN_HOSTS_PATH:-./secrets/known_hosts}:/run/secrets/github_known_hosts:ro
     depends_on:
       - worker
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; import os; assert Path('/tmp/personal-agent-ready').exists(); os.kill(1, 0)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  deployer:
+    build:
+      context: .
+      dockerfile: Dockerfile.deployer
+    image: ${DEPLOYER_IMAGE:-personal-agent-deployer:latest}
+    entrypoint: ["python", "-m", "deployer"]
+    environment:
+      DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
+      DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
+      BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
+      DEPLOYMENT_STATE_DIR: /workspace/.personal-agent-state
+      SELF_REPOSITORY_PATH: /workspace/personal-agent
+      HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      WORKER_IMAGE: ${WORKER_IMAGE:-repository-worker:latest}
+      GIT_SSH_KEY_PATH: ${GIT_SSH_KEY_PATH:-./secrets/personal-agent-github}
+      GIT_KNOWN_HOSTS_PATH: ${GIT_KNOWN_HOSTS_PATH:-./secrets/known_hosts}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
+    restart: unless-stopped

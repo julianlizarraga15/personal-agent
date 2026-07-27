@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from router import Router
+from self_deployment import is_non_fast_forward, publish_and_queue
 
 
 LOGGER = logging.getLogger(__name__)
@@ -306,89 +307,13 @@ def self_deploy(
     if approval_callback is None:
         return "self-deployment requires Telegram approval"
 
-    branch_result = subprocess.run(["git", "branch", "--show-current"], cwd=project.path, capture_output=True, text=True, timeout=30)
-    branch = branch_result.stdout.strip()
-    if branch_result.returncode or branch != "main":
-        return json.dumps({"stage": "preflight", "status": "rejected", "error": "self-deployment requires the self-repository to be checked out on main", "branch": branch})
-    state_dir = Path(os.environ.get("DEPLOYMENT_STATE_DIR", "/workspace/.personal-agent-state"))
-    active_manifest = DeploymentManifest(state_dir).read()
-    if (state_dir / "deployment.lock").exists() or (active_manifest and active_manifest.get("status") == "restarting"):
-        return json.dumps({"stage": "preflight", "status": "rejected", "error": "deployment already in progress; use /pending"})
-    fetched = subprocess.run(["git", "fetch", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
-    if fetched.returncode:
-        return json.dumps({"stage": "sync", "status": "failed", "exit_code": fetched.returncode, "output": (fetched.stdout + fetched.stderr)[-8000:]})
-    divergence = subprocess.run(["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"], cwd=project.path, capture_output=True, text=True, timeout=30)
-    try:
-        ahead, behind = (int(value) for value in divergence.stdout.split())
-    except (ValueError, TypeError):
-        ahead, behind = 0, 0
-    if behind:
-        return json.dumps({"stage": "preflight", "status": "push_conflict", "error": "origin/main advanced; synchronize the checkout before deploying", "behind": behind, "ahead": ahead})
-
-    LOGGER.info("self_deploy stage=tests")
-    tests = subprocess.run(["python", "-m", "pytest"], cwd=project.path, capture_output=True, text=True, timeout=300)
-    if tests.returncode:
-        LOGGER.info("self_deploy stage=pytest_failed fallback=unittest")
-        tests = subprocess.run(
-            ["python", "-m", "unittest", "discover", "-s", "tests"],
-            cwd=project.path, capture_output=True, text=True, timeout=300,
-        )
-    if tests.returncode:
-        LOGGER.error("self_deploy failed stage=tests exit_code=%s", tests.returncode)
-        return json.dumps({"stage": "tests", "exit_code": tests.returncode, "output": (tests.stdout + tests.stderr)[-12000:]})
-
-    LOGGER.info("self_deploy stage=diff")
-    diff = subprocess.run(["git", "diff", "--stat", "HEAD"], cwd=project.path, capture_output=True, text=True, timeout=30)
-    if diff.returncode:
-        return json.dumps({"stage": "diff", "exit_code": diff.returncode, "error": diff.stderr})
-    if not diff.stdout.strip():
-        LOGGER.info("self_deploy stopped stage=diff reason=no_changes")
-        return "self-deployment found no uncommitted changes; continue editing before retrying deployment"
-    if not approval_callback("self_deploy_commit", f"commit self-repository changes after tests passed:\n{diff.stdout[-3000:]}"):
-        LOGGER.info("self_deploy stopped stage=commit_approval")
-        return "deployment stopped; commit was not approved"
-    LOGGER.info("self_deploy stage=commit")
-    staged = subprocess.run(["git", "add", "-A"], cwd=project.path, capture_output=True, text=True, timeout=30)
-    if staged.returncode:
-        return json.dumps({"stage": "git add", "exit_code": staged.returncode, "error": staged.stderr})
-    commit = subprocess.run(["git", "commit", "-m", "Deploy self-update"], cwd=project.path, capture_output=True, text=True, timeout=30)
-    if commit.returncode:
-        return json.dumps({"stage": "commit", "exit_code": commit.returncode, "output": (commit.stdout + commit.stderr)[-6000:]})
-    if not approval_callback("self_deploy_push", "push self-update commit to origin/main"):
-        LOGGER.info("self_deploy stopped stage=push_approval")
-        return "deployment stopped; push was not approved"
-    LOGGER.info("self_deploy stage=push")
-    pushed = subprocess.run(["git", "push", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
-    if pushed.returncode:
-        push_output = pushed.stdout + pushed.stderr
-        if not _is_non_fast_forward(push_output):
-            return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": push_output[-8000:]})
-        LOGGER.info("self_deploy stage=push_retry reason=remote_advanced")
-        fetched = subprocess.run(["git", "fetch", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
-        if fetched.returncode:
-            return json.dumps({"stage": "sync", "exit_code": fetched.returncode, "output": (fetched.stdout + fetched.stderr)[-8000:]})
-        rebased = subprocess.run(["git", "rebase", "origin/main"], cwd=project.path, capture_output=True, text=True, timeout=120)
-        if rebased.returncode:
-            return json.dumps({"stage": "rebase", "exit_code": rebased.returncode, "output": (rebased.stdout + rebased.stderr)[-8000:]})
-        pushed = subprocess.run(["git", "push", "origin", "main"], cwd=project.path, capture_output=True, text=True, timeout=120)
-        if pushed.returncode:
-            return json.dumps({"stage": "push", "exit_code": pushed.returncode, "output": (pushed.stdout + pushed.stderr)[-8000:]})
-    if not approval_callback("self_deploy_restart", "rebuild the bot image and recreate the Docker Compose bot service"):
-        LOGGER.info("self_deploy stopped stage=restart_approval")
-        return "changes were committed and pushed; restart was not approved"
-    if restart_notice_callback is not None:
-        restart_notice_callback()
-    LOGGER.info("self_deploy stage=restart")
-    helper = os.environ.get("SELF_DEPLOY_HELPER", "/usr/local/bin/restart-personal-agent")
-    deployed = subprocess.run([helper], cwd=project.path, capture_output=True, text=True, timeout=600)
-    LOGGER.info("self_deploy finished stage=restart exit_code=%s", deployed.returncode)
-    return json.dumps({"stage": "restart", "exit_code": deployed.returncode, "branch": branch, "output": (deployed.stdout + deployed.stderr)[-8000:]})
+    LOGGER.info("self_deploy stage=publish_and_queue")
+    return publish_and_queue(project.path, approval_callback, restart_notice_callback)
 
 
 def _is_non_fast_forward(output: str) -> bool:
-    """Identify a push rejection that can be repaired by rebasing once."""
-    normalized = output.lower()
-    return any(phrase in normalized for phrase in ("fetch first", "non-fast-forward", "rejected"))
+    """Compatibility wrapper for existing callers and tests."""
+    return is_non_fast_forward(output)
 
 
 def _routing_context(session: AgentSession) -> dict[str, Any]:

@@ -14,14 +14,14 @@ This project runs an agent that can modify and push code, so deployment security
 - Destructive shell commands and shell-form Git publication remain blocked; Git publication uses the dedicated approval flow.
 - Secrets belong in the runtime environment or a local `.env` file. `.env` is ignored by Git and must never be committed.
 - Operational logs are written to container stdout and intentionally exclude prompts, message text, file contents, command output, and credentials. Restrict access to Docker logs because paths, tool names, project names, and numeric Telegram user IDs may still be present.
-- Self-deployment writes only deployment ID, commit, image references, timestamps, and machine-readable status to the host-persistent `/workspace/.personal-agent-state/deployment.json`; an atomic lock prevents concurrent deployments and stale locks are reclaimed only after the deployment timeout window.
+- Self-deployment writes only deployment ID, commit, image references, timestamps, and machine-readable status to `/workspace/.personal-agent-state`; an automatically released file lock prevents concurrent deployments. A dedicated deployer retains Docker-socket authority across bot replacement.
 - Never inspect, read, print, or expose the contents of `.env` under any circumstances. Use `.env.example` for configuration guidance.
 - Test commands are detected from repository metadata and run inside the worker container.
 
 ## Deployment requirements
 
 - Run the bot only on a trusted host. Mounting `/var/run/docker.sock` effectively gives the bot control of the host Docker daemon.
-- The self-deployment helper accepts no arguments, allows only the configured Compose file and `personal-agent-bot:*` image family, and is mounted read-only. It still has Docker-socket authority and must be treated as a host-control boundary.
+- The deployer allows only the configured Compose file and `personal-agent-bot:*` image family. It has Docker-socket authority and must be treated as a host-control boundary; update its separate image explicitly from the host.
 - Use a dedicated Git identity/token with the minimum repository permissions needed to create branches and push them.
 - Do not mount the host filesystem, SSH agent, cloud credentials, or personal home directory into the bot or worker containers. The only intended host mount is the dedicated project `workspace/` directory.
 - Pin or regularly review base images and Python dependencies before production use.
