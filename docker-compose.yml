@@ -35,7 +35,7 @@ services:
       OPENAI_COMPACT_THRESHOLD: ${OPENAI_COMPACT_THRESHOLD:-32000}
       OPENAI_TURN_WARNING_TOKENS: ${OPENAI_TURN_WARNING_TOKENS:-100000}
       USAGE_DB_PATH: ${USAGE_DB_PATH:-/workspace/.personal-agent-state/usage.sqlite3}
-      TRACE_DB_PATH: ${TRACE_DB_PATH:-/workspace/.personal-agent-state/traces.sqlite3}
+      TRACE_DB_PATH: ${TRACE_DB_PATH:-/trace-state/traces.sqlite3}
       TRACE_RETENTION_DAYS: ${TRACE_RETENTION_DAYS:-7}
       TRACE_EXPORT_PART_BYTES: ${TRACE_EXPORT_PART_BYTES:-47185920}
       AGENT_WORKSPACE_ROOT: /workspace/personal-agent
@@ -53,6 +53,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
+      - trace-state:/trace-state
       - ${GIT_SSH_KEY_PATH:-./secrets/personal-agent-github}:/run/secrets/github_key:ro
       - ${GIT_KNOWN_HOSTS_PATH:-./secrets/known_hosts}:/run/secrets/github_known_hosts:ro
     depends_on:
@@ -81,11 +82,15 @@ services:
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       WORKER_IMAGE: ${WORKER_IMAGE:-repository-worker:latest}
-      TRACE_DB_PATH: ${TRACE_DB_PATH:-/workspace/.personal-agent-state/traces.sqlite3}
+      TRACE_DB_PATH: ${TRACE_DB_PATH:-/trace-state/traces.sqlite3}
       TRACE_RETENTION_DAYS: ${TRACE_RETENTION_DAYS:-7}
       GIT_SSH_KEY_PATH: ${GIT_SSH_KEY_PATH:-./secrets/personal-agent-github}
       GIT_KNOWN_HOSTS_PATH: ${GIT_KNOWN_HOSTS_PATH:-./secrets/known_hosts}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
+      - trace-state:/trace-state
     restart: unless-stopped
+
+volumes:
+  trace-state:

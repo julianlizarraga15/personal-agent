@@ -35,7 +35,7 @@
 - Image rejected: use a JPEG, PNG, WEBP, or non-animated GIF under `TELEGRAM_MAX_IMAGE_BYTES` (10 MiB by default). Resend the image for later visual follow-ups because image bytes are not retained after the turn.
 - Audio rejected: use OGG, MP3/MPEG/MPGA, MP4/M4A, WAV, WebM, or FLAC under `TELEGRAM_MAX_AUDIO_BYTES` (20 MB by default) and `TELEGRAM_MAX_AUDIO_SECONDS` (10 minutes by default). Telegram documents need a supported extension or an `audio/*` MIME type to reach the handler. Check OpenAI connectivity when validation succeeds but transcription fails.
 - Unexpected API cost: inspect per-response usage logs and `/usage`, confirm the intended route/model, and check whether repeated file or command output crossed the compaction or high-usage threshold.
-- Trace unavailable: verify the persistent state mount, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
+- Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 - State storage full/unavailable: free space or restore the mount. The deployer retains an active request when failure state cannot be persisted and resumes it after restart. The bot continues answering when the usage ledger or trace database cannot be written, reports durable usage totals as unavailable or incomplete, logs trace write loss without private content, and resumes recording future requests when storage recovers.
 
@@ -61,5 +61,5 @@ Do not recreate the deployer during ordinary self-deployment. If automatic rollb
 - Review dependency and base-image updates.
 - Rotate tokens and verify the allowed Telegram user list.
 - Check disk space consumed by Docker images and build cache.
-- Confirm `TRACE_RETENTION_DAYS` matches policy (seven days by default) and that the state directory is accessible only to the operator.
+- Confirm `TRACE_RETENTION_DAYS` matches policy (seven days by default) and that access to the `trace-state` Docker volume is restricted to the operator.
 - Periodically review `projects.yaml` and remove repositories no longer in scope.
