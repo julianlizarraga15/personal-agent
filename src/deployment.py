@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
+from owner_trace import TraceRecorder
+
 
 ACTIVE_STATUSES = {"queued", "building", "restarting", "verifying", "awaiting_report"}
 TERMINAL_REPORT_STATUSES = {"awaiting_report", "rollback_completed", "rollback_failed", "failed"}
@@ -89,7 +91,7 @@ class DeploymentQueue:
         except FileNotFoundError:
             return False
 
-    def enqueue(self, commit: str) -> dict:
+    def enqueue(self, commit: str, turn_id: str | None = None) -> dict:
         current = self.manifest.read()
         if self.request_path.exists() or self.active_path.exists() or (current and current.get("status") in ACTIVE_STATUSES):
             raise DeploymentBusy("deployment already queued or running; inspect /pending")
@@ -100,6 +102,8 @@ class DeploymentQueue:
             if self.request_path.exists() or self.active_path.exists() or (current and current.get("status") in ACTIVE_STATUSES):
                 raise DeploymentBusy("deployment already queued or running; inspect /pending")
             request = {"deployment_id": uuid.uuid4().hex[:12], "commit": commit, "requested_at": utc_now()}
+            if turn_id is not None:
+                request["turn_id"] = turn_id
             self.state_dir.mkdir(parents=True, exist_ok=True)
             temporary = self.request_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
@@ -159,6 +163,7 @@ def run_deployment(
     stability_seconds: int = 10,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     sleeper: Callable[[float], None] = time.sleep,
+    trace: TraceRecorder | None = None,
 ) -> dict:
     """Build and verify the bot while retaining rollback authority."""
     if compose_file != "/workspace/personal-agent/docker-compose.yml":
@@ -166,45 +171,66 @@ def run_deployment(
     if not bot_image.startswith("personal-agent-bot:"):
         raise RuntimeError("refusing an unexpected bot image")
     manifest = DeploymentManifest(state_dir)
+    def execute(stage: str, command: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
+        if trace is not None:
+            trace.event("deployment.controller_command.started", {"stage": stage, "command": command})
+        started = time.monotonic()
+        result = _run(command, runner, timeout)
+        if trace is not None:
+            trace.event("deployment.controller_command.finished", {"stage": stage, "command": command, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "elapsed_seconds": time.monotonic() - started})
+        return result
+
     commit = str(request["commit"])
-    head = _run(["git", "-C", repository, "rev-parse", "HEAD"], runner, 30)
-    dirty = _run(["git", "-C", repository, "status", "--porcelain"], runner, 30)
+    head = execute("verify head", ["git", "-C", repository, "rev-parse", "HEAD"], 30)
+    dirty = execute("verify clean", ["git", "-C", repository, "status", "--porcelain"], 30)
     if head.returncode or head.stdout.strip() != commit or dirty.returncode or dirty.stdout.strip():
         return manifest.transition("failed", error="queued commit no longer matches a clean self-checkout")
 
-    inspect_previous = _run([docker, "image", "inspect", "--format", "{{.Id}}", bot_image], runner, 60)
+    inspect_previous = execute("inspect previous image", [docker, "image", "inspect", "--format", "{{.Id}}", bot_image], 60)
     previous_image = inspect_previous.stdout.strip() if inspect_previous.returncode == 0 else None
     manifest.transition("building", previous_image=previous_image, rollback_image=None)
+    if trace is not None:
+        trace.event("deployment.stage", {"stage": "building", "previous_image": previous_image})
     rollback_image = None
     if previous_image:
         rollback_image = f"personal-agent-bot:rollback-{request['deployment_id']}"
-        tagged = _run([docker, "tag", previous_image, rollback_image], runner, 60)
+        tagged = execute("preserve rollback image", [docker, "tag", previous_image, rollback_image], 60)
         if tagged.returncode:
             return manifest.transition("failed", error="could not preserve the previous bot image")
         manifest.transition("building", rollback_image=rollback_image)
 
-    build = _run([docker_compose, "-f", compose_file, "-p", project_name, "build", "bot"], runner)
+    build = execute("build", [docker_compose, "-f", compose_file, "-p", project_name, "build", "bot"])
     if build.returncode:
         return manifest.transition("failed", error=(build.stdout + build.stderr)[-4000:])
     manifest.transition("restarting")
-    recreate = _run([docker_compose, "-f", compose_file, "-p", project_name, "up", "-d", "--no-build", "--force-recreate", "bot"], runner)
+    if trace is not None:
+        trace.event("deployment.stage", {"stage": "restarting"})
+    recreate = execute("restart", [docker_compose, "-f", compose_file, "-p", project_name, "up", "-d", "--no-build", "--force-recreate", "bot"])
     if recreate.returncode:
-        return _rollback(manifest, compose_file, project_name, bot_image, rollback_image, docker_compose, docker, runner, sleeper, readiness_timeout, "recreate failed")
+        return _rollback(manifest, compose_file, project_name, bot_image, rollback_image, docker_compose, docker, runner, sleeper, readiness_timeout, "recreate failed", trace)
     manifest.transition("verifying")
-    if _wait_ready(compose_file, project_name, docker_compose, docker, runner, sleeper, readiness_timeout, stability_seconds):
+    if trace is not None:
+        trace.event("deployment.stage", {"stage": "verifying"})
+    if _wait_ready(compose_file, project_name, docker_compose, docker, runner, sleeper, readiness_timeout, stability_seconds, trace):
+        if trace is not None:
+            trace.event("deployment.verified", {"deployment_id": request.get("deployment_id"), "commit": commit})
         return manifest.transition("awaiting_report", verified_at=utc_now())
-    return _rollback(manifest, compose_file, project_name, bot_image, rollback_image, docker_compose, docker, runner, sleeper, readiness_timeout, "bot failed readiness verification")
+    return _rollback(manifest, compose_file, project_name, bot_image, rollback_image, docker_compose, docker, runner, sleeper, readiness_timeout, "bot failed readiness verification", trace)
 
 
 def _wait_ready(compose_file: str, project_name: str, docker_compose: str, docker: str,
                 runner: Callable[..., subprocess.CompletedProcess], sleeper: Callable[[float], None],
-                timeout: int, stability_seconds: int) -> bool:
+                timeout: int, stability_seconds: int, trace: TraceRecorder | None = None) -> bool:
     stable = 0
     for _ in range(timeout):
         service = _run([docker_compose, "-f", compose_file, "-p", project_name, "ps", "-q", "bot"], runner, 30)
         container_id = service.stdout.strip()
+        if trace is not None:
+            trace.event("deployment.readiness_check", {"iteration": _ + 1, "stage": "resolve_container", "exit_code": service.returncode, "stdout": service.stdout, "stderr": service.stderr})
         if service.returncode == 0 and container_id:
             state = _run([docker, "inspect", "--format", "{{.State.Running}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", container_id], runner, 30)
+            if trace is not None:
+                trace.event("deployment.readiness_check", {"iteration": _ + 1, "stage": "inspect_health", "container_id": container_id, "exit_code": state.returncode, "stdout": state.stdout, "stderr": state.stderr})
             if state.returncode == 0 and state.stdout.strip() in {"true healthy", "true none"}:
                 stable += 1
                 if stable >= stability_seconds:
@@ -218,13 +244,20 @@ def _wait_ready(compose_file: str, project_name: str, docker_compose: str, docke
 def _rollback(manifest: DeploymentManifest, compose_file: str, project_name: str, bot_image: str,
               rollback_image: str | None, docker_compose: str, docker: str,
               runner: Callable[..., subprocess.CompletedProcess], sleeper: Callable[[float], None],
-              timeout: int, reason: str) -> dict:
+              timeout: int, reason: str, trace: TraceRecorder | None = None) -> dict:
+    if trace is not None:
+        trace.event("deployment.rollback.started", {"reason": reason, "rollback_image": rollback_image})
     if not rollback_image:
         return manifest.transition("failed", error=reason, rollback="unavailable")
     restored = _run([docker, "tag", rollback_image, bot_image], runner, 60)
     recreated = _run([docker_compose, "-f", compose_file, "-p", project_name, "up", "-d", "--no-build", "--force-recreate", "bot"], runner)
+    if trace is not None:
+        trace.event("deployment.rollback_command", {"stage": "restore image", "exit_code": restored.returncode, "stdout": restored.stdout, "stderr": restored.stderr})
+        trace.event("deployment.rollback_command", {"stage": "restart", "exit_code": recreated.returncode, "stdout": recreated.stdout, "stderr": recreated.stderr})
     if restored.returncode or recreated.returncode:
         return manifest.transition("rollback_failed", error=reason)
-    if not _wait_ready(compose_file, project_name, docker_compose, docker, runner, sleeper, timeout, 3):
+    if not _wait_ready(compose_file, project_name, docker_compose, docker, runner, sleeper, timeout, 3, trace):
         return manifest.transition("rollback_failed", error=f"{reason}; rollback bot failed readiness")
+    if trace is not None:
+        trace.event("deployment.rollback.finished", {"status": "completed", "reason": reason})
     return manifest.transition("rollback_completed", error=reason, rolled_back_at=utc_now())

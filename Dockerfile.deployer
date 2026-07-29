@@ -6,6 +6,6 @@ RUN apt-get update \
 
 WORKDIR /app
 RUN git config --system --add safe.directory /workspace/personal-agent
-COPY src/deployment.py src/deployer.py ./
+COPY src/deployment.py src/deployer.py src/owner_trace.py ./
 
 ENTRYPOINT ["python", "-m", "deployer"]

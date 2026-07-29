@@ -1,4 +1,5 @@
 import base64
+import gzip
 from io import BytesIO
 import json
 import os
@@ -631,7 +632,13 @@ class AudioTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Audio transcript", task)
         self.assertIn("The server returns error 500.", task)
         self.assertNotIn(b"OggSdata", repr(session.agent.input_items).encode())
-        self.assertEqual([call.args[0] for call in message.reply_text.await_args_list], ["Transcribing…", "Working...", "Fixed it"])
+        replies = [call.args[0] for call in message.reply_text.await_args_list]
+        self.assertRegex(replies[0], r"Starting · turn [0-9a-f]{8}")
+        self.assertEqual(replies[-1], "Fixed it")
+        activity = message.reply_text.return_value
+        edited = [call.args[0] for call in activity.edit_text.await_args_list]
+        self.assertTrue(any(value.startswith("Transcribing · turn ") for value in edited))
+        self.assertTrue(any(value.startswith("Completed · turn ") for value in edited))
         self.assertEqual(message.reply_text.await_args_list[-1].kwargs["parse_mode"], "HTML")
         self.assertIn("gpt-4o-mini-transcribe", session.agent.usage.by_model)
         self.assertEqual([item.phase for item in persisted], ["transcription"])
@@ -888,9 +895,75 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(reaction_handlers[0].callback, telegram_bot.approval_reaction)
         command_callbacks = {handler.callback for handler in handlers if isinstance(handler, CommandHandler)}
         self.assertIn(telegram_bot.usage_command, command_callbacks)
+        self.assertIn(telegram_bot.prompt_command, command_callbacks)
+        self.assertIn(telegram_bot.trace_command, command_callbacks)
+        self.assertIn(telegram_bot.traces_command, command_callbacks)
         message_callbacks = {handler.callback for handler in handlers if isinstance(handler, MessageHandler)}
         self.assertIn(telegram_bot.image_message, message_callbacks)
         self.assertIn(telegram_bot.audio_message, message_callbacks)
+
+
+class TransparencyCommandTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    def tearDown(self) -> None:
+        telegram_bot.SESSIONS.clear()
+
+    @staticmethod
+    def update(message, user_id=42):
+        return SimpleNamespace(effective_user=SimpleNamespace(id=user_id), effective_message=message)
+
+    async def test_natural_prompt_request_deterministically_exports_live_prompt(self) -> None:
+        message = SimpleNamespace(text="What's your prompt?", reply_text=AsyncMock(), reply_document=AsyncMock())
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"TELEGRAM_ALLOWED_USER_ID": "42", "TRACE_DB_PATH": str(Path(directory) / "traces.sqlite3")},
+        ), patch("telegram_bot._run_agent", new_callable=AsyncMock) as run_agent:
+            await telegram_bot.conversational_message(self.update(message), SimpleNamespace())
+
+        run_agent.assert_not_awaited()
+        document = message.reply_document.await_args.kwargs["document"]
+        exported = json.loads(document.getvalue())
+        self.assertIn("You are a personal computer agent", exported["system_prompt"])
+        self.assertIn("conservative request router", exported["router_prompt"])
+        self.assertIn("tool_definitions", exported)
+        self.assertIn("provider_limits", exported)
+
+    async def test_trace_export_is_owner_only_and_can_export_running_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            from owner_trace import TraceStore
+            store = TraceStore(Path(directory) / "traces.sqlite3")
+            store.start_turn("abc12345", 42, project="demo", kind="conversation")
+            allowed_message = SimpleNamespace(reply_text=AsyncMock(), reply_document=AsyncMock())
+            denied_message = SimpleNamespace(reply_text=AsyncMock(), reply_document=AsyncMock())
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+                "telegram_bot.configured_trace_store", return_value=store
+            ):
+                await telegram_bot.trace_command(self.update(allowed_message), SimpleNamespace(args=["abc12345"]))
+                await telegram_bot.trace_command(self.update(denied_message, 7), SimpleNamespace(args=["abc12345"]))
+
+        compressed = allowed_message.reply_document.await_args.kwargs["document"].getvalue()
+        exported = json.loads(gzip.decompress(compressed))
+        self.assertEqual(exported["turn"]["status"], "running")
+        denied_message.reply_document.assert_not_awaited()
+        denied_message.reply_text.assert_not_awaited()
+
+    async def test_large_trace_export_is_split_without_dropping_bytes(self) -> None:
+        payload = {
+            "turn": {"turn_id": "split123"},
+            "events": [{"sequence": 1, "data": "value" * 1000}],
+        }
+        expected = gzip.compress(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode(), mtime=0)
+        message = SimpleNamespace(reply_document=AsyncMock())
+        with patch.dict(os.environ, {"TRACE_EXPORT_PART_BYTES": "17"}):
+            await telegram_bot._send_trace_document(message, payload)
+
+        parts = [call.kwargs["document"].getvalue() for call in message.reply_document.await_args_list]
+        names = [call.kwargs["filename"] for call in message.reply_document.await_args_list]
+        self.assertGreater(len(parts), 1)
+        self.assertEqual(b"".join(parts), expected)
+        self.assertTrue(all("part" in name for name in names))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from io import BytesIO
+import gzip
 import json
 import logging
 import os
@@ -25,8 +26,9 @@ import markdown
 from PIL import Image, UnidentifiedImageError
 from telegram.error import BadRequest
 
-from agent import Agent, AgentSession, ImageInput, ProjectContext
+from agent import Agent, AgentSession, ImageInput, ProjectContext, prompt_export
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
+from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 
 
@@ -273,6 +275,7 @@ class ConversationSession:
     pending_approval: PendingApproval | None = field(default=None, repr=False)
     approval_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     approval_delivery_failed: bool = field(default=False, repr=False)
+    active_trace: TraceRecorder | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.history is None:
@@ -301,6 +304,8 @@ class ConversationSession:
                 LOGGER.warning("approval rejected action=%s reason=another_request_pending", action)
                 return False
             self.pending_approval = request
+        if self.active_trace is not None:
+            self.active_trace.event("approval.requested", {"request_id": request.request_id, "action": action, "summary": summary, "expires_in_seconds": 300})
         try:
             LOGGER.info("approval waiting request_id=%s action=%s timeout_seconds=300", request.request_id, action)
             try:
@@ -311,6 +316,11 @@ class ConversationSession:
                 LOGGER.exception("approval prompt failed request_id=%s action=%s", request.request_id, action)
             resolved = request.event.wait(timeout=300)
             approved = resolved and request.approved is True
+            if self.active_trace is not None:
+                self.active_trace.event(
+                    "approval.finished",
+                    {"request_id": request.request_id, "action": action, "outcome": "approved" if approved else ("rejected" if resolved else "expired")},
+                )
             LOGGER.info(
                 "approval finished request_id=%s action=%s outcome=%s",
                 request.request_id,
@@ -331,6 +341,8 @@ class ConversationSession:
             if not request.resolve(approved):
                 return False
             LOGGER.info("approval resolved request_id=%s outcome=%s", request.request_id, "approved" if approved else "rejected")
+            if self.active_trace is not None:
+                self.active_trace.event("approval.resolved", {"request_id": request.request_id, "outcome": "approved" if approved else "rejected", "source": "command"})
             return True
 
     def resolve_reaction_approval(self, chat_id: int, message_id: int, approved: bool) -> bool:
@@ -362,6 +374,8 @@ class ConversationSession:
                 request.request_id,
                 "approved" if approved else "rejected",
             )
+            if self.active_trace is not None:
+                self.active_trace.event("approval.resolved", {"request_id": request.request_id, "outcome": "approved" if approved else "rejected", "source": "reaction"})
             return True
 
     def cancel_approval(self) -> None:
@@ -397,6 +411,21 @@ def configured_usage_store() -> UsageStore:
     return UsageStore(os.environ.get("USAGE_DB_PATH", str(state_dir / "usage.sqlite3")))
 
 
+def _start_trace(
+    turn_id: str,
+    user_id: int,
+    *,
+    project: str | None,
+    kind: str,
+    data: dict[str, Any],
+) -> TraceRecorder:
+    try:
+        return configured_trace_store().start_turn(turn_id, user_id, project=project, kind=kind, data=data)
+    except Exception:
+        LOGGER.exception("trace start failed turn_id=%s", turn_id)
+        return TraceRecorder(None, turn_id)
+
+
 def tracked_agent_session(user_id: int, project: ProjectContext | None = None) -> AgentSession:
     store = configured_usage_store()
     usage = SessionUsage(recorder=lambda item: store.record(user_id, item))
@@ -419,6 +448,7 @@ def run_docker_worker(
     base_branch: str | None = None,
     docker_bin: str = "docker",
     on_status: Callable[[str], None] | None = None,
+    trace: TraceRecorder | None = None,
 ) -> WorkerSummary:
     """Run the existing worker image and consume its status/result protocol."""
 
@@ -427,6 +457,8 @@ def run_docker_worker(
         command.extend(["--base-branch", base_branch])
     started = time.monotonic()
     LOGGER.info("legacy_worker started image=%s project=%s base_branch=%s", image, project, base_branch or "none")
+    if trace is not None:
+        trace.event("legacy_worker.started", {"command": command, "project": project, "task": task, "image": image, "base_branch": base_branch})
     try:
         process = subprocess.Popen(
             command,
@@ -437,6 +469,8 @@ def run_docker_worker(
         )
     except OSError as exc:
         LOGGER.exception("legacy_worker failed_to_start project=%s", project)
+        if trace is not None:
+            trace.event("legacy_worker.failed", {"error_type": type(exc).__name__, "error": str(exc)})
         raise WorkerExecutionError(f"Could not start Docker worker: {exc}") from exc
 
     stdout_lines: list[str] = []
@@ -447,11 +481,18 @@ def run_docker_worker(
         if line.startswith("STATUS: ") and on_status is not None:
             status = line.removeprefix("STATUS: ")
             LOGGER.info("legacy_worker status=%s", status)
+            if trace is not None:
+                trace.event("legacy_worker.status", {"status": status})
             on_status(status)
 
     stderr = process.stderr.read() if process.stderr is not None else ""
     return_code = process.wait()
     result_line = next((line for line in stdout_lines if line.startswith("RESULT: ")), None)
+    if trace is not None:
+        trace.event(
+            "legacy_worker.output",
+            {"exit_code": return_code, "stdout": "\n".join(stdout_lines), "stderr": stderr, "elapsed_seconds": time.monotonic() - started},
+        )
     if return_code or result_line is None:
         LOGGER.error("legacy_worker failed project=%s exit_code=%s elapsed_seconds=%.1f", project, return_code, time.monotonic() - started)
         logs = "\n".join(part for part in ("\n".join(stdout_lines), stderr.strip()) if part)
@@ -651,6 +692,118 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await message.reply_text("\n\n".join(sections))
 
 
+def _prompt_request(text: str) -> bool:
+    normalized = " ".join(text.lower().replace("’", "'").split()).strip(" ?!.")
+    return normalized in {
+        "what's your prompt",
+        "what is your prompt",
+        "show me your prompt",
+        "show your prompt",
+        "show me your system prompt",
+        "what's your system prompt",
+        "what is your system prompt",
+        "export your prompt",
+    }
+
+
+async def _send_json_document(message: object, payload: dict[str, Any], filename: str) -> None:
+    data = json.dumps(redact(payload), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    document = BytesIO(data)
+    document.name = filename
+    await message.reply_document(document=document, filename=filename)  # type: ignore[attr-defined]
+
+
+async def _send_trace_document(message: object, payload: dict[str, Any]) -> None:
+    raw = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    compressed = gzip.compress(raw, mtime=0)
+    part_size = _positive_env_int("TRACE_EXPORT_PART_BYTES", 45 * 1024 * 1024)
+    parts = [compressed[index:index + part_size] for index in range(0, len(compressed), part_size)] or [compressed]
+    turn_id = payload["turn"]["turn_id"]
+    for index, part in enumerate(parts, 1):
+        if len(parts) == 1:
+            filename = f"trace-{turn_id}.json.gz"
+        else:
+            filename = f"trace-{turn_id}.json.gz.part{index:03d}-of-{len(parts):03d}"
+        document = BytesIO(part)
+        document.name = filename
+        await message.reply_document(document=document, filename=filename)  # type: ignore[attr-defined]
+
+
+async def _export_prompt(message: object, user_id: int, *, source: str) -> None:
+    session = SESSIONS.get(user_id)
+    turn_id = uuid.uuid4().hex[:8]
+    trace = _start_trace(
+        turn_id,
+        user_id,
+        project=session.agent.project.name if session and session.agent.project else None,
+        kind="prompt_export",
+        data={"source": source},
+    )
+    try:
+        payload = prompt_export(session.agent if session is not None else None)
+        trace.event("prompt.exported", payload)
+        await _send_json_document(message, payload, "cornelio-prompt.json")
+        trace.finish("completed")
+    except Exception as exc:
+        trace.finish("failed", {"error_type": type(exc).__name__, "error": str(exc)})
+        raise
+
+
+async def prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    await _export_prompt(message, user.id, source="command")
+
+
+async def traces_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    try:
+        turns = configured_trace_store().list_turns(user.id)
+    except Exception:
+        LOGGER.exception("trace listing failed user_id=%s", user.id)
+        await message.reply_text("Trace storage is unavailable.")
+        return
+    if not turns:
+        await message.reply_text("No retained traces.")
+        return
+    lines = ["Retained traces:"]
+    for turn in turns:
+        models = ",".join(turn["models"]) or "none"
+        lines.append(
+            f"{turn['turn_id']} · {turn['started_at']} · {turn['status']} · "
+            f"{turn['project'] or 'none'} · {turn['route'] or 'unrouted'} · {models}"
+        )
+    await message.reply_text("\n".join(lines))
+
+
+async def trace_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    if len(context.args) > 1:
+        await message.reply_text("Usage: /trace [turn-id]")
+        return
+    turn_id = context.args[0] if context.args else None
+    try:
+        payload = configured_trace_store().export_turn(user.id, turn_id)
+    except Exception:
+        LOGGER.exception("trace export failed user_id=%s", user.id)
+        await message.reply_text("Trace storage is unavailable.")
+        return
+    if payload is None:
+        await message.reply_text("That trace is unknown or expired.")
+        return
+    await _send_trace_document(message, payload)
+
+
 async def _resolve_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, approved: bool) -> None:
     user = update.effective_user
     message = update.effective_message
@@ -676,7 +829,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await message.reply_text(
         "Chat normally, send an image, or send voice/audio to work in the configured computer workspace; use /project <directory-name> to narrow the context.\n"
-        "/new starts over, /stop forgets the session, /usage shows model cost, /pending shows deployment state, and /run <url> <task> runs one task.\n"
+        "/new starts over, /stop forgets the session, /usage shows model cost, /prompt exports active instructions, /traces lists retained traces, /trace [id] exports one, /pending shows deployment state, and /run <url> <task> runs one task.\n"
         "For requested edits or Git actions, react 👍/👎 to the approval prompt or use /approve <id> or /reject <id>."
     )
 
@@ -691,6 +844,9 @@ async def conversational_message(update: Update, context: ContextTypes.DEFAULT_T
         return
     session = session_for(user.id)
     if await _reply_if_busy(message, session):
+        return
+    if _prompt_request(message.text or ""):
+        await _export_prompt(message, user.id, source="natural_language")
         return
     if session.project is None:
         await _run_agent(message, session, message.text or "", user.id)
@@ -911,7 +1067,10 @@ async def _run_task(message: object, session: ConversationSession, task: str, us
         return
     assert session.project is not None
     image = os.environ.get("WORKER_IMAGE", "repository-worker:latest")
-    await message.reply_text("Working...")
+    turn_id = uuid.uuid4().hex[:8]
+    trace = _start_trace(turn_id, user_id, project=session.project, kind="legacy_run", data={"task": task, "repository": session.project})
+    session.active_trace = trace
+    activity_message = await message.reply_text(f"Starting legacy worker · turn {turn_id}")
     loop = asyncio.get_running_loop()
     statuses: asyncio.Queue[str] = asyncio.Queue()
 
@@ -926,23 +1085,34 @@ async def _run_task(message: object, session: ConversationSession, task: str, us
         image=image,
         base_branch=session.branch,
         on_status=receive_status,
+        trace=trace,
     ))
     while not worker.done():
-        await _send_pending_statuses(message, statuses)
+        await _send_pending_statuses(activity_message, statuses, turn_id)
         await asyncio.sleep(0.05)
     await asyncio.sleep(0)
-    await _send_pending_statuses(message, statuses)
+    await _send_pending_statuses(activity_message, statuses, turn_id)
     try:
         summary = await worker
     except WorkerExecutionError as exc:
         if SESSIONS.get(user_id) is session:
             await message.reply_text(f"Worker failed.\n{exc}")
+        trace.finish("failed", {"error_type": type(exc).__name__, "error": str(exc)})
+        editor = getattr(activity_message, "edit_text", None)
+        if editor is not None:
+            await editor(f"Failed · turn {turn_id}")
     else:
         if SESSIONS.get(user_id) is session:
             await message.reply_text(summary.format())
             session.branch = summary.branch
             session.remember(task, summary.format())
+        trace.finish("completed", summary.__dict__)
+        editor = getattr(activity_message, "edit_text", None)
+        if editor is not None:
+            await editor(f"Completed · turn {turn_id}")
     finally:
+        if session.active_trace is trace:
+            session.active_trace = None
         session.running = False
 
 
@@ -963,6 +1133,39 @@ async def _run_agent(
     LOGGER.info("turn started turn_id=%s user_id=%s project=%s", turn_id, user_id, session.project or "computer")
     session.running = True
     loop = asyncio.get_running_loop()
+    trace = _start_trace(
+        turn_id,
+        user_id,
+        project=session.agent.project.name if session.agent.project else session.project,
+        kind="audio" if audio is not None else ("image" if image is not None else "conversation"),
+        data={
+            "input": task,
+            "image": binary_metadata(image.data, image.media_type) if image is not None else None,
+            "audio": binary_metadata(audio.data, audio.media_type) if audio is not None else None,
+        },
+    )
+    session.active_trace = trace
+    activity_message = await message.reply_text(f"Starting · turn {turn_id}")  # type: ignore[attr-defined]
+    activity_lock = threading.Lock()
+    current_activity = "Starting"
+
+    async def set_activity(stage: str) -> None:
+        nonlocal current_activity
+        with activity_lock:
+            if stage == current_activity:
+                return
+            current_activity = stage
+        editor = getattr(activity_message, "edit_text", None)
+        if editor is None:
+            return
+        try:
+            await editor(f"{stage} · turn {turn_id}")
+        except Exception:
+            LOGGER.warning("activity update failed turn_id=%s stage=%s", turn_id, stage)
+
+    def activity(stage: str) -> None:
+        trace.event("activity.updated", {"stage": stage})
+        asyncio.run_coroutine_threadsafe(set_activity(stage), loop)
 
     def notify(request: PendingApproval) -> None:
         LOGGER.info("turn approval_prompt turn_id=%s request_id=%s action=%s", turn_id, request.request_id, request.action)
@@ -972,6 +1175,8 @@ async def _run_agent(
             f"details: {request.summary}\n"
             f"React 👍 to approve or 👎 to reject, or reply /approve {request.request_id} or /reject {request.request_id}."
         )
+        trace.event("approval.prompt", {"request_id": request.request_id, "text": prompt})
+        activity("Awaiting approval")
         delivery = asyncio.run_coroutine_threadsafe(message.reply_text(prompt), loop)  # type: ignore[attr-defined]
         try:
             sent_message = delivery.result(timeout=30)
@@ -982,20 +1187,25 @@ async def _run_agent(
             else:
                 LOGGER.warning("turn approval_prompt_unbound turn_id=%s request_id=%s", turn_id, request.request_id)
             LOGGER.info("turn approval_prompt_delivered turn_id=%s request_id=%s", turn_id, request.request_id)
+            trace.event("approval.prompt_delivered", {"request_id": request.request_id, "chat_id": chat_id, "message_id": message_id})
         except FutureTimeoutError:
             session.approval_delivery_failed = True
             LOGGER.error("turn approval_prompt_failed turn_id=%s request_id=%s reason=delivery_timeout", turn_id, request.request_id)
+            trace.event("approval.prompt_failed", {"request_id": request.request_id, "reason": "delivery_timeout"})
             # Keep the request pending. A slow Telegram API response is not a
             # rejection, and /approve without an ID remains available.
         except Exception:
             session.approval_delivery_failed = True
             LOGGER.exception("turn approval_prompt_failed turn_id=%s request_id=%s", turn_id, request.request_id)
+            trace.event("approval.prompt_failed", {"request_id": request.request_id, "reason": "delivery_error"})
 
     def request_approval(action: str, summary: str) -> bool:
         return session.request_approval(action, summary, notify)
 
     def restart_notice() -> None:
         LOGGER.info("turn restart_notice turn_id=%s", turn_id)
+        trace.event("deployment.restart_notice", {})
+        activity("Deployment: restart queued")
         delivery = asyncio.run_coroutine_threadsafe(
             message.reply_text("Changes pushed. Rebuilding and restarting the bot now…"),  # type: ignore[attr-defined]
             loop,
@@ -1005,11 +1215,23 @@ async def _run_agent(
         except Exception:
             LOGGER.exception("turn restart_notice_failed turn_id=%s", turn_id)
 
+    final_status = "failed"
     try:
         agent = Agent()
         if audio is not None:
-            await message.reply_text("Transcribing…")  # type: ignore[attr-defined]
+            await set_activity("Transcribing")
             transcription_model = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
+            trace.event(
+                "transcription.request",
+                {
+                    "model": transcription_model,
+                    "file": binary_metadata(audio.data, audio.media_type),
+                    "filename": audio.filename,
+                    "response_format": "json",
+                },
+                model=transcription_model,
+            )
+            transcription_started = time.monotonic()
             try:
                 transcription = await asyncio.to_thread(
                     _transcribe_audio,
@@ -1024,6 +1246,7 @@ async def _run_agent(
                     transcription_model,
                     type(exc).__name__,
                 )
+                trace.event("transcription.failed", {"model": transcription_model, "error_type": type(exc).__name__, "error": str(exc), "elapsed_seconds": time.monotonic() - transcription_started})
                 if SESSIONS.get(user_id) is session:
                     await message.reply_text("I couldn’t transcribe that audio. Please try again.")  # type: ignore[attr-defined]
                 return
@@ -1036,6 +1259,10 @@ async def _run_agent(
                 usage.input_tokens,
                 usage.output_tokens,
             )
+            trace.event(
+                "transcription.response",
+                {"model": transcription_model, "text": getattr(transcription, "text", ""), "usage": getattr(transcription, "usage", None), "elapsed_seconds": time.monotonic() - transcription_started},
+            )
             transcript = str(getattr(transcription, "text", "") or "").strip()
             if not transcript:
                 LOGGER.info("audio transcription empty turn_id=%s", turn_id)
@@ -1043,7 +1270,7 @@ async def _run_agent(
                     await message.reply_text("I couldn’t detect any speech in that audio.")  # type: ignore[attr-defined]
                 return
             task = _audio_task(task, transcript)
-        await message.reply_text("Working...")  # type: ignore[attr-defined]
+        await set_activity("Running agent")
         response = await asyncio.to_thread(
             agent.respond,
             session.agent,
@@ -1052,20 +1279,31 @@ async def _run_agent(
             turn_id,
             restart_notice,
             image,
+            trace,
+            activity,
         )
         queued = _queued_deployment(response)
         if SESSIONS.get(user_id) is session:
             if queued:
                 await message.reply_text(f"Deployment {queued['deployment_id']} queued for commit {queued['commit'][:12]}.")  # type: ignore[attr-defined]
+                trace.event("telegram.response_sent", {"type": "deployment_queued", "text": f"Deployment {queued['deployment_id']} queued for commit {queued['commit'][:12]}."})
                 asyncio.create_task(_monitor_deployment(message.reply_text))  # type: ignore[attr-defined]
             else:
                 await _reply_agent_response(message, response or "Done.")
+                trace.event("telegram.response_sent", {"type": "agent_response", "text": response or "Done."})
+        final_status = "queued" if queued else "completed"
+        await set_activity(("Deployment queued" if queued else "Completed"))
         LOGGER.info("turn finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
     except Exception as exc:
         LOGGER.exception("turn failed turn_id=%s elapsed_seconds=%.1f error_type=%s", turn_id, time.monotonic() - started, type(exc).__name__)
         if SESSIONS.get(user_id) is session:
             await message.reply_text(f"I couldn’t complete that: {exc}")  # type: ignore[attr-defined]
+        trace.event("turn.error", {"error_type": type(exc).__name__, "error": str(exc), "elapsed_seconds": time.monotonic() - started})
+        await set_activity("Failed")
     finally:
+        trace.finish(final_status, {"elapsed_seconds": time.monotonic() - started})
+        if session.active_trace is trace:
+            session.active_trace = None
         session.running = False
 
 
@@ -1091,10 +1329,13 @@ def _audio_task(instruction: str, transcript: str) -> str:
     )
 
 
-async def _send_pending_statuses(message: object, statuses: asyncio.Queue[str]) -> None:
+async def _send_pending_statuses(message: object, statuses: asyncio.Queue[str], turn_id: str = "unknown") -> None:
     while not statuses.empty():
         status = await statuses.get()
-        await message.reply_text(STATUS_MESSAGES.get(status, status))  # type: ignore[attr-defined]
+        text = f"{STATUS_MESSAGES.get(status, status)} · turn {turn_id}"
+        editor = getattr(message, "edit_text", None)
+        if editor is not None:
+            await editor(text)
 
 
 def _queued_deployment(response: str) -> dict | None:
@@ -1124,6 +1365,12 @@ async def _monitor_deployment(send: Callable[[str], object], timeout_seconds: in
         state = manifest.read()
         if state and state.get("status") in TERMINAL_REPORT_STATUSES and not state.get("reported_at"):
             status = str(state["status"])
+            deployment_trace = None
+            if state.get("turn_id"):
+                try:
+                    deployment_trace = TraceRecorder(configured_trace_store(), str(state["turn_id"]))
+                except Exception:
+                    LOGGER.exception("deployment report trace unavailable")
             try:
                 result = send(_deployment_report(state))
                 if hasattr(result, "__await__"):
@@ -1132,8 +1379,12 @@ async def _monitor_deployment(send: Callable[[str], object], timeout_seconds: in
                     manifest.transition("healthy", recovered_from=status, reported_at=time.time())
                 else:
                     manifest.write(reported_at=time.time())
+                if deployment_trace is not None:
+                    deployment_trace.event("deployment.report_delivered", {"status": status, "deployment_id": state.get("deployment_id")})
             except Exception:
                 LOGGER.exception("deployment report failed status=%s", status)
+                if deployment_trace is not None:
+                    deployment_trace.event("deployment.report_failed", {"status": status, "deployment_id": state.get("deployment_id")})
             return
         await asyncio.sleep(1)
 
@@ -1151,6 +1402,10 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     from telegram.ext import MessageHandler, MessageReactionHandler, filters
 
     token, allowed_id, _ = required_settings(environ)
+    try:
+        configured_trace_store().purge()
+    except Exception:
+        LOGGER.exception("trace startup initialization failed")
     application = Application.builder().token(token).concurrent_updates(True).post_init(report_startup_deployment).build()
     application.add_handler(CommandHandler("run", run_command))
     application.add_handler(CommandHandler("project", select_project))
@@ -1160,6 +1415,9 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     application.add_handler(CommandHandler("reject", reject_action))
     application.add_handler(CommandHandler("pending", pending_command))
     application.add_handler(CommandHandler("usage", usage_command))
+    application.add_handler(CommandHandler("prompt", prompt_command))
+    application.add_handler(CommandHandler("trace", trace_command))
+    application.add_handler(CommandHandler("traces", traces_command))
     application.add_handler(CommandHandler(["help", "start"], help_command))
     application.add_handler(
         MessageReactionHandler(

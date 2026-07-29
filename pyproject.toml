@@ -18,4 +18,4 @@ testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["agent", "router", "usage", "worker", "telegram_bot", "deployment", "deployer", "self_deployment"]
+py-modules = ["agent", "router", "owner_trace", "usage", "worker", "telegram_bot", "deployment", "deployer", "self_deployment"]

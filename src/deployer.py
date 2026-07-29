@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from deployment import DeploymentBusy, DeploymentManifest, DeploymentQueue, deployment_lock, run_deployment
+from owner_trace import TraceRecorder, configured_trace_store
 
 
 LOGGER = logging.getLogger(__name__)
@@ -22,6 +23,13 @@ def run_once(queue: DeploymentQueue) -> bool:
             if request is None:
                 return False
             LOGGER.info("deployment started deployment_id=%s commit=%s", request["deployment_id"], request["commit"])
+            trace = None
+            if request.get("turn_id"):
+                try:
+                    trace = TraceRecorder(configured_trace_store(), str(request["turn_id"]))
+                    trace.event("deployment.controller_started", {"deployment_id": request["deployment_id"], "commit": request["commit"]})
+                except Exception:
+                    LOGGER.exception("deployment trace unavailable deployment_id=%s", request["deployment_id"])
             result = run_deployment(
                 request,
                 compose_file=os.environ["DEPLOY_COMPOSE_FILE"],
@@ -29,7 +37,10 @@ def run_once(queue: DeploymentQueue) -> bool:
                 bot_image=os.environ["BOT_IMAGE"],
                 repository=os.environ.get("SELF_REPOSITORY_PATH", "/workspace/personal-agent"),
                 state_dir=str(queue.state_dir),
+                trace=trace,
             )
+            if trace is not None:
+                trace.event("deployment.controller_finished", result, status="completed" if result.get("status") == "awaiting_report" else "failed")
             LOGGER.info("deployment finished deployment_id=%s status=%s", request["deployment_id"], result.get("status"))
     except DeploymentBusy:
         return False

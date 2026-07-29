@@ -30,10 +30,11 @@ class OwnerGuidelineTests(unittest.TestCase):
         self.assertNotIn("owner's name is Daniel", source)
         self.assertNotIn("call him Daniel", source)
 
-    def test_task_start_acknowledgements_say_working(self) -> None:
+    def test_task_start_acknowledgements_use_live_turn_ids(self) -> None:
         source = (ROOT / "src/telegram_bot.py").read_text(encoding="utf-8")
-        self.assertGreaterEqual(source.count('reply_text("Working...")'), 2)
-        self.assertNotIn('reply_text("Task received.")', source)
+        self.assertNotIn('reply_text("Working...")', source)
+        self.assertIn('f"Starting · turn {turn_id}"', source)
+        self.assertIn('f"Starting legacy worker · turn {turn_id}"', source)
 
 
 if __name__ == "__main__":

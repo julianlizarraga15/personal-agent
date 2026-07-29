@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from usage import ModelUsage
+from owner_trace import TraceRecorder
 
 
 LOGGER = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class Router:
         self.model = model
         self.max_output_tokens = max_output_tokens
 
-    def decide(self, message: str, context: dict[str, Any]) -> RouteDecision:
+    def decide(self, message: str, context: dict[str, Any], trace: TraceRecorder | None = None) -> RouteDecision:
         started = time.monotonic()
         LOGGER.info("router started model=%s", self.model)
         response: Any | None = None
@@ -81,22 +82,27 @@ class Router:
             "latest_message": message,
             "context": context,
         }
+        request = {
+            "model": self.model,
+            "instructions": ROUTER_INSTRUCTIONS,
+            "input": json.dumps(payload, ensure_ascii=False),
+            "reasoning": {"effort": "minimal"},
+            "max_output_tokens": self.max_output_tokens,
+            "text": {
+                "format": {
+                    "type": "json_schema", "name": "agent_route", "strict": True, "schema": ROUTER_SCHEMA,
+                }
+            },
+        }
+        if trace is not None:
+            trace.event("router.request", request, model=self.model)
         try:
-            response = self.client.responses.create(
-                model=self.model,
-                instructions=ROUTER_INSTRUCTIONS,
-                input=json.dumps(payload, ensure_ascii=False),
-                reasoning={"effort": "minimal"},
-                max_output_tokens=self.max_output_tokens,
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "agent_route",
-                        "strict": True,
-                        "schema": ROUTER_SCHEMA,
-                    }
-                },
-            )
+            response = self.client.responses.create(**request)
+            if trace is not None:
+                trace.event(
+                    "router.response",
+                    {"output_text": response.output_text, "output": getattr(response, "output", []), "usage": getattr(response, "usage", None)},
+                )
             data = json.loads(response.output_text)
             route = data.get("route")
             answer = data.get("answer", "")
@@ -115,14 +121,22 @@ class Router:
             usage = ModelUsage.from_response(response, self.model, "router")
             if confidence < 0.7 or (route == "small" and (confidence < 0.9 or not answer.strip())):
                 LOGGER.info("router finished route=large confidence=%.2f elapsed_seconds=%.1f", confidence, time.monotonic() - started)
-                return RouteDecision("large", confidence=confidence, capabilities=frozenset({"web", "computer"}), usage=usage)
+                decision = RouteDecision("large", confidence=confidence, capabilities=frozenset({"web", "computer"}), usage=usage)
+                if trace is not None:
+                    trace.event("router.decision", {"route": decision.route, "confidence": confidence, "capabilities": sorted(decision.capabilities), "fallback": "low_confidence"}, route=decision.route)
+                return decision
             if route == "small":
                 capabilities = []
             elif route == "economy" and "computer" in capabilities:
                 route = "medium"
             LOGGER.info("router finished route=%s confidence=%.2f elapsed_seconds=%.1f", route, confidence, time.monotonic() - started)
-            return RouteDecision(route, answer=answer, confidence=confidence, capabilities=frozenset(capabilities), usage=usage)
+            decision = RouteDecision(route, answer=answer, confidence=confidence, capabilities=frozenset(capabilities), usage=usage)
+            if trace is not None:
+                trace.event("router.decision", {"route": route, "answer": answer, "confidence": confidence, "capabilities": sorted(decision.capabilities)}, route=route)
+            return decision
         except Exception as exc:
             LOGGER.warning("router failed error_type=%s elapsed_seconds=%.1f; falling_back=large", type(exc).__name__, time.monotonic() - started)
             usage = ModelUsage.from_response(response, self.model, "router") if response is not None else None
+            if trace is not None:
+                trace.event("router.failed", {"error_type": type(exc).__name__, "error": str(exc), "fallback": "large", "elapsed_seconds": time.monotonic() - started}, route="large")
             return RouteDecision("large", capabilities=frozenset({"web", "computer"}), usage=usage)

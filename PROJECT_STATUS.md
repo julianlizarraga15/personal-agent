@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-07-27
+Last updated: 2026-07-29
 
 ## Current state
 
@@ -12,6 +12,7 @@ Last updated: 2026-07-27
 - A configurable cost-aware router uses GPT-5 nano for high-confidence simple answers, Luna for ordinary reasoning/web work, Terra for routine computer work, and Sol for difficult, ambiguous, high-stakes, or deployment work.
 - Main-model requests use explicit effort, verbosity, output limits, selected capabilities, and server-side compaction. File listings, reads, command output, and exact-fragment edits are designed to reduce repeated tool-context cost.
 - Per-response token/cache/search usage is logged and appended without message content to a host-persistent SQLite ledger; `/usage` shows current-session, current UTC day, and all recorded totals with a dated estimated cost, while unusually large turns warn without being interrupted.
+- Owner-transparent execution tracing records ordered, recursively redacted application-observable prompts, model/tool activity, approvals, complete tool output, and deployment stages for seven days by default. `/prompt`, `/traces`, and `/trace` are owner-only, and live activity messages carry the matching turn ID.
 - ADR 0003 and the architecture, security, README, and runbook documentation describe the Responses API and constrained computer tools.
 - The live deployment checkout is on `main` and aligned with `origin/main`; the separate outer deployment checkout remains at `a4d27eb` and is not the self-deployment source.
 - Local reaction-handler edits that predated the deployment are preserved in the live checkout as the named stash `pre-reaction-deploy-local-edits`; the published implementation supersedes their behavior.
@@ -26,12 +27,13 @@ Last updated: 2026-07-27
 
 ## Last stopping point
 
-- Durable usage accounting is implemented, tested, published, and deployed. Historical usage from before this release was not recoverable; the new lifetime ledger starts with the first post-deployment direct OpenAI request.
+- Owner-transparent execution tracing is implemented, tested, published to `origin/main`, and deployed to the bot and persistent deployer services.
 
 ## Next steps
 
 - Continue normal product work; update the stable deployer image manually only when deployment infrastructure changes.
 - Exercise `/usage` after a non-sensitive model turn, then verify its daily and lifetime totals remain after a later bot restart.
+- Exercise `/prompt`, `/traces`, and partial/completed `/trace` exports with non-sensitive live content, verify live activity editing, and confirm seven-day retention on the persistent mount.
 - Exercise each model route, compaction, and a bounded file-read continuation in a non-sensitive live Telegram session.
 - Send a non-sensitive photo and image document through the live bot after deployment, including a captionless image and an oversize/unsupported rejection case.
 - Publish and deploy audio support, then exercise a non-sensitive voice note and audio attachment with and without a caption plus an oversize/unsupported rejection case.
@@ -52,10 +54,12 @@ Last updated: 2026-07-27
 - The high-usage threshold is advisory: it records one warning per expensive turn but does not stop an active task.
 - Image turns accept one photo or supported image document up to 10 MiB by default, use high-detail vision, and discard image bytes after the current turn.
 - Audio turns accept Telegram voice notes, audio attachments, and supported audio documents up to 20 MB and a reported 10-minute duration by default. They use `gpt-4o-mini-transcribe`, treat an optional caption as the instruction over the transcript, retain only text in session history, and report transcription cost as unknown until a verified price is added.
+- Trace visibility does not expand execution authority. Provider-hidden controls, unreturned raw reasoning, unreturned hosted-search internals, raw media, `.env` contents, and credential values remain unavailable or protected.
 
 ## Validation
 
-- Current validation: 125 unit tests pass via `python -m pytest` in a temporary environment, including durable usage reopen/restart behavior, concurrent recording, UTC daily and lifetime aggregation, failure handling, audio admission, signature validation, transcription semantics and failures, image routing, multimodal request shape, current-turn cleanup, cost-aware routing, request controls, compaction pruning, bounded tools, token/cost accounting, `/usage`, session resets, reaction authorization, and deployment behavior. Python compilation and `git diff --check` also pass.
+- Current validation: 139 unit tests pass via `python -m pytest`, including durable trace reopen/restart behavior, ordered concurrent writes, partial and completed exports, retention, permissions, recursive redaction, binary hashing, multipart exports, prompt disclosure, owner authorization, direct and fallback routing traces, complete versus model-bounded output, reasoning-summary fallback, durable usage, media handling, approvals, compaction, and deployment behavior. Python compilation and `git diff --check` also pass.
+- Both the bot and deployer images build successfully with the tracing changes, their Python modules import inside the built images, and the recreated services report healthy/running after deployment.
 - The audio- and image-capable bot image builds successfully; its production audio handler registers and synchronous model calls can be offloaded from the event loop. Neither media path has yet been exercised against live Telegram or OpenAI services.
 - The durable-usage bot image built successfully and the replacement bot reached Docker health; a live post-deployment `/usage` exchange and model call have not yet been exercised.
 - Earlier live deployment validation covered a queued deployment and controlled startup-failure rollback; the bot and deployer containers were healthy at that stopping point.

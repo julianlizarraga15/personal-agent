@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agent import Agent, AgentSession, Computer, ImageInput, ProjectContext, _is_non_fast_forward, _output_items, _requests_self_deploy, _self_deploy_retryable, tool_definitions
 from router import RouteDecision, Router
+from owner_trace import TraceStore
 from usage import ModelUsage, SessionUsage
 
 
@@ -41,6 +42,22 @@ class ComputerToolTests(unittest.TestCase):
                 "run_command", {"command": "git push origin main"}
             )
             self.assertIn("blocked", result)
+
+    def test_env_files_cannot_be_read_written_or_printed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("OPENAI_API_KEY=secret", encoding="utf-8")
+            (root / ".env.example").write_text("OPENAI_API_KEY=placeholder", encoding="utf-8")
+            computer = Computer(ProjectContext("demo", root))
+            for name, arguments in (
+                ("read_file", {"path": ".env"}),
+                ("write_file", {"path": ".env.local", "content": "SAFE=no"}),
+            ):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, "protected"):
+                    computer.call(name, arguments)
+            self.assertIn("blocked", computer.call("run_command", {"command": "cat .env"}))
+            self.assertIn("placeholder", json.loads(computer.call("read_file", {"path": ".env.example"}))["content"])
+            self.assertNotIn("blocked", computer.call("run_command", {"command": "cat .env.example"}))
 
     def test_git_actions_require_approval_and_push_current_branch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +123,22 @@ class ComputerToolTests(unittest.TestCase):
             command = json.loads(computer.call("run_command", {"command": "python3 -c 'print(\"x\" * 7000)'"}))
             self.assertTrue(command["stdout_truncated"])
             self.assertLessEqual(len(command["stdout"]), 6000)
+
+    def test_trace_keeps_complete_command_output_while_model_output_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = TraceStore(root / "traces.sqlite3")
+            trace = store.start_turn("toolturn", 42, project="demo", kind="conversation")
+            computer = Computer(ProjectContext("demo", root), trace)
+
+            model_result = json.loads(computer.call("run_command", {"command": "python3 -c 'print(\"x\" * 7000)'"}))
+            exported = store.export_turn(42, "toolturn")
+
+        finished = next(event for event in exported["events"] if event["type"] == "tool.finished")
+        self.assertTrue(model_result["stdout_truncated"])
+        self.assertLessEqual(len(model_result["stdout"]), 6000)
+        self.assertGreater(len(finished["data"]["complete_result"]["stdout"]), 7000)
+        self.assertTrue(finished["data"]["model_result_bounded"])
 
     def test_self_deploy_request_detection_is_explicit(self) -> None:
         self.assertTrue(_requests_self_deploy("modify itself and deploy itself"))
@@ -425,6 +458,43 @@ class RouterTests(unittest.TestCase):
         result = Agent(client=UnusedClient(), router=SmallRouter()).respond(AgentSession(), "hello")
         self.assertEqual(result, "A cheap answer")
 
+    def test_production_small_route_creates_complete_router_trace(self) -> None:
+        client = self.FakeClient('{"route":"small","answer":"Hello!","confidence":0.98,"capabilities":[]}')
+        with tempfile.TemporaryDirectory() as directory:
+            store = TraceStore(Path(directory) / "traces.sqlite3")
+            trace = store.start_turn("smallturn", 42, project=None, kind="conversation")
+            result = Agent(client=client, router=Router(client, "small")).respond(AgentSession(), "hello", trace=trace)
+            exported = store.export_turn(42, "smallturn")
+
+        self.assertEqual(result, "Hello!")
+        event_types = [event["type"] for event in exported["events"]]
+        self.assertIn("router.request", event_types)
+        self.assertIn("router.response", event_types)
+        self.assertIn("router.decision", event_types)
+        self.assertIn("conversation.output", event_types)
+
+    def test_production_router_failure_is_traced_before_main_fallback(self) -> None:
+        class Responses:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return SimpleNamespace(output_text="not json", output=[])
+                return SimpleNamespace(output_text="fallback answer", output=[], usage=None)
+
+        client = SimpleNamespace(responses=Responses())
+        with tempfile.TemporaryDirectory() as directory:
+            store = TraceStore(Path(directory) / "traces.sqlite3")
+            trace = store.start_turn("fallback", 42, project=None, kind="conversation")
+            result = Agent(client=client, router=Router(client, "small")).respond(AgentSession(), "ambiguous", trace=trace)
+            exported = store.export_turn(42, "fallback")
+
+        self.assertEqual(result, "fallback answer")
+        self.assertIn("router.failed", [event["type"] for event in exported["events"]])
+        self.assertIn("model.response", [event["type"] for event in exported["events"]])
+
     def test_router_context_excludes_latest_message_and_tracks_router_usage(self) -> None:
         class CapturingRouter:
             def __init__(self) -> None:
@@ -497,7 +567,7 @@ class RouterTests(unittest.TestCase):
 
         self.assertEqual(result, "economy answer")
         self.assertEqual(client.responses.kwargs["model"], "cheap")
-        self.assertEqual(client.responses.kwargs["reasoning"], {"effort": "low"})
+        self.assertEqual(client.responses.kwargs["reasoning"], {"effort": "low", "summary": "auto"})
         self.assertEqual(client.responses.kwargs["max_output_tokens"], 4096)
         self.assertEqual(client.responses.kwargs["tools"], [{"type": "web_search"}])
         self.assertEqual(client.responses.kwargs["context_management"][0]["compact_threshold"], 32000)
@@ -518,6 +588,35 @@ class RouterTests(unittest.TestCase):
         client = SimpleNamespace(responses=FakeResponses())
         Agent(client=client, router=EconomyRouter()).respond(AgentSession(), "think about this")
         self.assertNotIn("tools", client.responses.kwargs)
+
+    def test_reasoning_summary_is_retried_and_limitation_is_traced_when_unsupported(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) == 1:
+                    raise ValueError("reasoning summary is not supported by this model")
+                return SimpleNamespace(output=[], output_text="answer", usage=None)
+
+        class EconomyRouter:
+            def decide(self, message, context):
+                return RouteDecision("economy", confidence=0.95)
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = TraceStore(Path(directory) / "traces.sqlite3")
+            trace = store.start_turn("turn1", 42, project=None, kind="conversation")
+            responses = FakeResponses()
+            result = Agent(client=SimpleNamespace(responses=responses), router=EconomyRouter()).respond(
+                AgentSession(), "think", trace=trace
+            )
+            exported = store.export_turn(42, "turn1")
+
+        self.assertEqual(result, "answer")
+        self.assertEqual(responses.calls[0]["reasoning"], {"effort": "low", "summary": "auto"})
+        self.assertEqual(responses.calls[1]["reasoning"], {"effort": "low"})
+        self.assertIn("reasoning_summary.unavailable", [event["type"] for event in exported["events"]])
 
     def test_agent_prunes_context_before_latest_compaction_item(self) -> None:
         class CompactionItem:

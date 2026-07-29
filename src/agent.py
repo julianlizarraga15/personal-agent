@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from typing import Any, Callable
 
 from router import Router
 from self_deployment import is_non_fast_forward, publish_and_queue
+from owner_trace import TraceRecorder, binary_metadata
 from usage import ModelUsage, SessionUsage
 
 
@@ -40,6 +42,11 @@ tests first, then use self_deploy. Do not use self_deploy for other projects. Fi
 edits within the current project do not require approval. Never ask for approval in
 ordinary response text; invoke the relevant tool and let the application present the
 approval request when one is required.
+All application-owned instructions, prompts, model settings, tool calls, observable
+outputs, approvals, and execution stages are visible to the authorized owner through
+the prompt and trace exports. Be accurate about the limits: provider-hidden controls,
+raw chain-of-thought, and hosted-tool internals not returned by the provider are not
+available. Reasoning summaries may be requested and shown when the provider returns them.
 """
 
 
@@ -50,6 +57,7 @@ RESPONSE_ONLY_ITEM_FIELDS = frozenset({"created_by", "status"})
 ApprovalCallback = Callable[[str, str], bool]
 DeployCallback = Callable[[], str]
 RestartNoticeCallback = Callable[[], None]
+ActivityCallback = Callable[[str], None]
 
 
 @dataclass
@@ -107,28 +115,66 @@ def tool_definitions(include_self_deploy: bool = False) -> list[dict[str, Any]]:
 class Computer:
     """Tools restricted to one configured project directory."""
 
-    def __init__(self, project: ProjectContext) -> None:
+    def __init__(
+        self,
+        project: ProjectContext,
+        trace: TraceRecorder | None = None,
+        activity_callback: ActivityCallback | None = None,
+    ) -> None:
         self.project = project
+        self.trace = trace
+        self.activity_callback = activity_callback
 
     def _path(self, relative: str) -> Path:
         candidate = (self.project.path / relative).resolve()
         root = self.project.path.resolve()
         if candidate != root and root not in candidate.parents:
             raise ValueError("path must stay inside the current project")
+        requested_parts = Path(relative).parts
+        resolved_parts = candidate.relative_to(root).parts
+        if any(
+            part == ".env" or (part.startswith(".env.") and part != ".env.example")
+            for part in (*requested_parts, *resolved_parts)
+        ):
+            raise ValueError(".env files are protected and cannot be inspected or modified")
         return candidate
 
     def call(self, name: str, arguments: dict[str, Any], approval_callback: ApprovalCallback | None = None, deploy_callback: DeployCallback | None = None) -> str:
         started = time.monotonic()
         LOGGER.info("tool started name=%s", name)
+        if self.activity_callback is not None:
+            self.activity_callback(f"Tool: {name}")
+        if self.trace is not None:
+            self.trace.event("tool.started", {"name": name, "arguments": arguments})
         try:
-            result = self._call(name, arguments, approval_callback, deploy_callback)
-        except Exception:
+            result, complete_result = self._call(name, arguments, approval_callback, deploy_callback)
+        except Exception as exc:
             LOGGER.exception("tool failed name=%s elapsed_seconds=%.1f", name, time.monotonic() - started)
+            if self.trace is not None:
+                self.trace.event(
+                    "tool.failed",
+                    {"name": name, "error_type": type(exc).__name__, "error": str(exc), "elapsed_seconds": time.monotonic() - started},
+                )
             raise
         LOGGER.info("tool finished name=%s elapsed_seconds=%.1f", name, time.monotonic() - started)
+        if self.trace is not None:
+            try:
+                comparable_model_result = json.loads(result)
+            except (TypeError, json.JSONDecodeError):
+                comparable_model_result = result
+            self.trace.event(
+                "tool.finished",
+                {
+                    "name": name,
+                    "complete_result": complete_result,
+                    "model_result": result,
+                    "model_result_bounded": complete_result != comparable_model_result,
+                    "elapsed_seconds": time.monotonic() - started,
+                },
+            )
         return result
 
-    def _call(self, name: str, arguments: dict[str, Any], approval_callback: ApprovalCallback | None = None, deploy_callback: DeployCallback | None = None) -> str:
+    def _call(self, name: str, arguments: dict[str, Any], approval_callback: ApprovalCallback | None = None, deploy_callback: DeployCallback | None = None) -> tuple[str, Any]:
         if name == "list_files":
             directory = self._path(arguments.get("path", "."))
             max_depth = max(1, min(int(arguments.get("max_depth", 4)), 10))
@@ -139,7 +185,9 @@ class Computer:
                 and ".git" not in path.relative_to(self.project.path).parts
                 and len(path.relative_to(directory).parts) <= max_depth
             )
-            return json.dumps({"files": files[:300], "truncated": len(files) > 300, "total_matches": len(files)})
+            complete = {"files": files, "truncated": False, "total_matches": len(files)}
+            bounded = {"files": files[:300], "truncated": len(files) > 300, "total_matches": len(files)}
+            return json.dumps(bounded), complete
         if name == "read_file":
             path = self._path(arguments["path"])
             lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -147,7 +195,13 @@ class Computer:
             requested_end = int(arguments.get("end_line", start_line + 399))
             if start_line < 1 or requested_end < start_line:
                 raise ValueError("line range must be positive and ordered")
-            bounded_end = min(requested_end, start_line + 399, len(lines))
+            complete_end = min(requested_end, len(lines))
+            complete_content = "".join(lines[start_line - 1:complete_end])
+            complete = {
+                "path": arguments["path"], "start_line": start_line, "end_line": complete_end,
+                "total_lines": len(lines), "content": complete_content,
+            }
+            bounded_end = min(complete_end, start_line + 399)
             selected: list[str] = []
             selected_chars = 0
             char_truncated = False
@@ -165,7 +219,7 @@ class Computer:
             end_line = start_line + len(selected) - 1 if selected else min(start_line - 1, len(lines))
             content = "".join(selected)
             truncated = char_truncated or end_line < len(lines)
-            return json.dumps({
+            bounded = {
                 "path": arguments["path"],
                 "start_line": start_line,
                 "end_line": end_line,
@@ -173,7 +227,8 @@ class Computer:
                 "truncated": truncated,
                 "next_start_line": end_line + 1 if truncated and not (char_truncated and len(selected) == 1 and len(lines[start_line - 1]) > 30000) else None,
                 "content": content,
-            })
+            }
+            return json.dumps(bounded), complete
         if name == "edit_file":
             path = self._path(arguments["path"])
             old_text = arguments["old_text"]
@@ -183,58 +238,76 @@ class Computer:
             matches = content.count(old_text)
             replace_all = bool(arguments.get("replace_all", False))
             if matches == 0:
-                return "edit failed: old_text was not found"
+                result = "edit failed: old_text was not found"
+                return result, result
             if matches > 1 and not replace_all:
-                return f"edit failed: old_text matched {matches} times; provide a unique fragment or set replace_all"
+                result = f"edit failed: old_text matched {matches} times; provide a unique fragment or set replace_all"
+                return result, result
             updated = content.replace(old_text, arguments["new_text"], -1 if replace_all else 1)
             path.write_text(updated, encoding="utf-8")
-            return f"edited {path.relative_to(self.project.path)} ({matches if replace_all else 1} replacement(s))"
+            result = f"edited {path.relative_to(self.project.path)} ({matches if replace_all else 1} replacement(s))"
+            return result, result
         if name == "write_file":
             path = self._path(arguments["path"])
             content = arguments["content"]
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-            return f"wrote {path.relative_to(self.project.path)}"
+            result = f"wrote {path.relative_to(self.project.path)}"
+            return result, result
         if name == "run_command":
             command = arguments["command"]
             lowered = command.lower()
-            if any(blocked in lowered for blocked in ("rm -rf", "git push", "git commit", "shutdown", "format c:")):
-                return "blocked: use the dedicated approved tool for this action"
+            protected_env = re.search(r"(?<![\w])\.env(?!\.example(?=$|[\s'\";|&]))", lowered) is not None
+            if protected_env or any(blocked in lowered for blocked in ("rm -rf", "git push", "git commit", "shutdown", "format c:")):
+                result = "blocked: use the dedicated approved tool for this action"
+                return result, result
             result = subprocess.run(command, cwd=self.project.path, shell=True, capture_output=True, text=True, timeout=120)
-            return json.dumps({
+            complete = {"exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+            bounded = {
                 "exit_code": result.returncode,
                 "stdout": result.stdout[-6000:],
                 "stderr": result.stderr[-6000:],
                 "stdout_truncated": len(result.stdout) > 6000,
                 "stderr_truncated": len(result.stderr) > 6000,
-            })
+            }
+            return json.dumps(bounded), complete
         if name == "git_status":
-            return self._git(["status", "--short"])
+            result = self._git(["status", "--short"])
+            return result, json.loads(result)
         if name == "git_diff":
-            return self._git(["diff", "--stat", "HEAD"])
+            result = self._git(["diff", "--stat", "HEAD"])
+            return result, json.loads(result)
         if name == "git_commit":
             message = arguments["message"]
             if not self._approve(approval_callback, "git_commit", f"commit with message: {message[:300]}"):
-                return "approval denied or expired; commit was not created"
+                result = "approval denied or expired; commit was not created"
+                return result, result
             staged = subprocess.run(["git", "add", "-A"], cwd=self.project.path, capture_output=True, text=True, timeout=30)
             if staged.returncode:
-                return json.dumps({"exit_code": staged.returncode, "output": staged.stdout, "error": staged.stderr})
-            return self._git(["commit", "-m", message])
+                result = json.dumps({"exit_code": staged.returncode, "output": staged.stdout, "error": staged.stderr})
+                return result, json.loads(result)
+            result = self._git(["commit", "-m", message])
+            return result, json.loads(result)
         if name == "git_push":
             remote = arguments.get("remote", "origin")
             branch = arguments.get("branch")
             if branch is None:
                 branch_result = subprocess.run(["git", "branch", "--show-current"], cwd=self.project.path, capture_output=True, text=True, timeout=30)
                 if branch_result.returncode:
-                    return json.dumps({"exit_code": branch_result.returncode, "output": branch_result.stdout, "error": branch_result.stderr})
+                    result = json.dumps({"exit_code": branch_result.returncode, "output": branch_result.stdout, "error": branch_result.stderr})
+                    return result, json.loads(result)
                 branch = branch_result.stdout.strip()
             if not self._approve(approval_callback, "git_push", f"push {remote}/{branch}"):
-                return "approval denied or expired; branch was not pushed"
-            return self._git(["push", remote, branch])
+                result = "approval denied or expired; branch was not pushed"
+                return result, result
+            result = self._git(["push", remote, branch])
+            return result, json.loads(result)
         if name == "self_deploy":
             if deploy_callback is None:
-                return "self-deployment is unavailable in this session"
-            return deploy_callback()
+                result = "self-deployment is unavailable in this session"
+                return result, result
+            result = deploy_callback()
+            return result, result
         raise ValueError(f"unknown tool: {name}")
 
     @staticmethod
@@ -290,6 +363,8 @@ class Agent:
         turn_id: str = "unknown",
         restart_notice_callback: RestartNoticeCallback | None = None,
         image: ImageInput | None = None,
+        trace: TraceRecorder | None = None,
+        activity_callback: ActivityCallback | None = None,
     ) -> str:
         started = time.monotonic()
         turn_start_tokens = session.usage.billed_tokens()
@@ -299,12 +374,23 @@ class Agent:
         selected_max_output_tokens = self.max_output_tokens
         capabilities = {"web", "computer"}
         LOGGER.info("agent started turn_id=%s project=%s", turn_id, session.project.name if session.project else "computer")
+        if trace is not None:
+            trace.event(
+                "conversation.input",
+                {
+                    "message": message,
+                    "conversation_input": session.input_items,
+                    "image": binary_metadata(image.data, image.media_type) if image is not None else None,
+                },
+            )
 
         def record_usage(usage: ModelUsage | None) -> None:
             nonlocal warned
             if usage is None:
                 return
             session.usage.add(usage)
+            if trace is not None:
+                trace.event("model.usage", usage.__dict__)
             LOGGER.info(
                 "model usage turn_id=%s phase=%s model=%s input_tokens=%s cached_tokens=%s cache_write_tokens=%s output_tokens=%s reasoning_tokens=%s web_search_calls=%s",
                 turn_id,
@@ -325,9 +411,16 @@ class Agent:
 
         routing_message = f"{message}\n\n[Image attached for visual analysis.]" if image is not None else message
         if self.router is not None:
-            decision = self.router.decide(routing_message, _routing_context(session))
+            if activity_callback is not None:
+                activity_callback("Routing")
+            if isinstance(self.router, Router):
+                decision = self.router.decide(routing_message, _routing_context(session), trace=trace)
+            else:
+                decision = self.router.decide(routing_message, _routing_context(session))
             record_usage(decision.usage)
             LOGGER.info("agent route turn_id=%s route=%s confidence=%.2f", turn_id, decision.route, decision.confidence)
+            if activity_callback is not None:
+                activity_callback(f"Route: {decision.route} · {getattr(self.router, 'model', 'router')}")
             capabilities = set(decision.capabilities)
             if decision.route == "small" and image is None:
                 session.input_items.append({"role": "user", "content": message})
@@ -335,6 +428,8 @@ class Agent:
                 _remember_routing(session, "user", message)
                 _remember_routing(session, "assistant", decision.answer)
                 LOGGER.info("agent finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
+                if trace is not None:
+                    trace.event("conversation.output", {"text": decision.answer, "source": "router"})
                 return decision.answer
             if decision.route in {"small", "economy"}:
                 selected_model = self.economy_model
@@ -382,7 +477,7 @@ class Agent:
                 # One explicit approval covers the complete, user-requested deployment turn.
                 tool_approval = lambda _action, _summary: True
 
-            computer = Computer(session.project) if session.project is not None and "computer" in capabilities else None
+            computer = Computer(session.project, trace, activity_callback) if session.project is not None and "computer" in capabilities else None
             self_repository = session.project is not None and _is_self_repository(session.project)
             tools: list[dict[str, Any]] = []
             if "web" in capabilities:
@@ -397,12 +492,14 @@ class Agent:
             for _ in range(12):
                 phase = "tool_loop" if computer is not None else "answer"
                 LOGGER.info("model request turn_id=%s phase=%s model=%s iteration=%s", turn_id, phase, selected_model, _ + 1)
+                if activity_callback is not None:
+                    activity_callback(f"{decision.route.title() if self.router is not None else 'Direct'} · {selected_model}")
                 session.input_items[:] = [_replayable_input_item(item) for item in session.input_items]
                 request: dict[str, Any] = {
                     "model": selected_model,
                     "instructions": instructions,
                     "input": session.input_items,
-                    "reasoning": {"effort": selected_effort},
+                    "reasoning": {"effort": selected_effort, "summary": "auto"},
                     "max_output_tokens": selected_max_output_tokens,
                     "text": {"verbosity": self.text_verbosity},
                 }
@@ -410,15 +507,62 @@ class Agent:
                     request["tools"] = tools
                 if self.compact_threshold and image is None:
                     request["context_management"] = [{"type": "compaction", "compact_threshold": self.compact_threshold}]
-                response = self.client.responses.create(**request)
+                if trace is not None:
+                    trace.event(
+                        "model.request",
+                        {"phase": phase, "iteration": _ + 1, "request": request},
+                        model=selected_model,
+                    )
+                request_started = time.monotonic()
+                try:
+                    response = self.client.responses.create(**request)
+                except Exception as exc:
+                    if not _reasoning_summary_unsupported(exc):
+                        if trace is not None:
+                            trace.event("model.failed", {"phase": phase, "iteration": _ + 1, "model": selected_model, "error_type": type(exc).__name__, "error": str(exc), "elapsed_seconds": time.monotonic() - request_started})
+                        raise
+                    if trace is not None:
+                        trace.event(
+                            "reasoning_summary.unavailable",
+                            {"model": selected_model, "error_type": type(exc).__name__, "error": str(exc), "action": "retried_without_summary"},
+                        )
+                    request = dict(request)
+                    request["reasoning"] = {"effort": selected_effort}
+                    if trace is not None:
+                        trace.event("model.retry", {"reason": "reasoning_summary_unsupported", "request": request}, model=selected_model)
+                    try:
+                        response = self.client.responses.create(**request)
+                    except Exception as retry_exc:
+                        if trace is not None:
+                            trace.event("model.failed", {"phase": phase, "iteration": _ + 1, "model": selected_model, "retry_without_summary": True, "error_type": type(retry_exc).__name__, "error": str(retry_exc), "elapsed_seconds": time.monotonic() - request_started})
+                        raise
                 record_usage(ModelUsage.from_response(response, selected_model, phase))
+                if trace is not None:
+                    trace.event(
+                        "model.response",
+                        {
+                            "phase": phase, "iteration": _ + 1, "model": selected_model,
+                            "output": getattr(response, "output", []), "output_text": getattr(response, "output_text", ""),
+                            "usage": getattr(response, "usage", None), "elapsed_seconds": time.monotonic() - request_started,
+                        },
+                    )
+                    web_items = [item for item in getattr(response, "output", []) if _item_value(item, "type") == "web_search_call"]
+                    if web_items:
+                        trace.event(
+                            "web_search.observed",
+                            {"calls": web_items, "limitation": "Only hosted-search data returned in Responses API output is observable."},
+                        )
                 session.input_items.extend(_output_items(response))
-                _prune_compacted_context(session)
+                pruned = _prune_compacted_context(session)
+                if trace is not None and pruned:
+                    trace.event("conversation.compacted", pruned)
                 calls = [item for item in response.output if _item_value(item, "type") == "function_call"]
                 if not calls:
                     text = response.output_text
                     _remember_routing(session, "assistant", text)
                     LOGGER.info("agent finished turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
+                    if trace is not None:
+                        trace.event("conversation.output", {"text": text, "source": "main_model"})
                     return text
                 for call in calls:
                     try:
@@ -433,7 +577,7 @@ class Agent:
                                     call.name,
                                     json.loads(call.arguments),
                                     tool_approval,
-                                    lambda: self_deploy(session.project, tool_approval, restart_notice_callback),
+                                    lambda: self_deploy(session.project, tool_approval, restart_notice_callback, trace, activity_callback),
                                 )
                                 self_deploy_attempted = True
                                 last_self_deploy_result = result
@@ -442,12 +586,14 @@ class Agent:
                                 call.name,
                                 json.loads(call.arguments),
                                 tool_approval,
-                                lambda: self_deploy(session.project, tool_approval, restart_notice_callback),
+                                lambda: self_deploy(session.project, tool_approval, restart_notice_callback, trace, activity_callback),
                             )
                     except Exception as exc:  # tool failures belong in the conversation
                         result = f"tool error: {exc}"
                     session.input_items.append({"type": "function_call_output", "call_id": call.call_id, "output": result})
             LOGGER.warning("agent tool_limit turn_id=%s elapsed_seconds=%.1f", turn_id, time.monotonic() - started)
+            if trace is not None:
+                trace.event("agent.tool_limit", {"limit": 12, "elapsed_seconds": time.monotonic() - started})
             return "I reached the tool-call limit for this turn."
         finally:
             if image is not None:
@@ -484,6 +630,8 @@ def self_deploy(
     project: ProjectContext,
     approval_callback: ApprovalCallback | None,
     restart_notice_callback: RestartNoticeCallback | None = None,
+    trace: TraceRecorder | None = None,
+    activity_callback: ActivityCallback | None = None,
 ) -> str:
     """Test, publish, and request a rebuild of the configured self repository."""
     LOGGER.info("self_deploy started project=%s", project.name)
@@ -493,7 +641,7 @@ def self_deploy(
         return "self-deployment requires Telegram approval"
 
     LOGGER.info("self_deploy stage=publish_and_queue")
-    return publish_and_queue(project.path, approval_callback, restart_notice_callback)
+    return publish_and_queue(project.path, approval_callback, restart_notice_callback, trace, activity_callback)
 
 
 def _is_non_fast_forward(output: str) -> bool:
@@ -535,14 +683,83 @@ def _item_value(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def _prune_compacted_context(session: AgentSession) -> None:
+def _prune_compacted_context(session: AgentSession) -> dict[str, Any] | None:
     """Discard replay items superseded by the latest server compaction item."""
     latest = None
     for index, item in enumerate(session.input_items):
         if _item_value(item, "type") == "compaction":
             latest = index
     if latest is not None and latest > 0:
+        details = {"discarded_items": latest, "remaining_items": len(session.input_items) - latest, "compaction_item": session.input_items[latest]}
         del session.input_items[:latest]
+        return details
+    return None
+
+
+def _reasoning_summary_unsupported(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "summary" in text and any(
+        marker in text for marker in ("unsupported", "not supported", "unknown", "unrecognized", "invalid")
+    )
+
+
+def prompt_export(session: AgentSession | None = None) -> dict[str, Any]:
+    """Describe the exact application-owned prompt and active model configuration."""
+
+    project = session.project if session is not None else default_project_for_export()
+    dynamic_context = None
+    if project is not None:
+        dynamic_context = f"Current project: {project.name} at {project.path}"
+    reasoning_values = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+    return {
+        "schema_version": 1,
+        "system_prompt": SYSTEM_PROMPT,
+        "router_prompt": __import__("router").ROUTER_INSTRUCTIONS,
+        "dynamic_project_context": dynamic_context,
+        "router_schema": __import__("router").ROUTER_SCHEMA,
+        "tool_definitions": {
+            "web": WEB_SEARCH_TOOL,
+            "computer": tool_definitions(False),
+            "self_repository": tool_definitions(True),
+        },
+        "model_configuration": {
+            "router_enabled": os.environ.get("OPENAI_ROUTER_ENABLED", "1").lower() not in {"0", "false", "no", "off"},
+            "router_model": os.environ.get("OPENAI_ROUTER_MODEL", "gpt-5-nano"),
+            "router_max_output_tokens": 512,
+            "economy_model": os.environ.get("OPENAI_ECONOMY_MODEL", "gpt-5.6-luna"),
+            "intermediate_model": os.environ.get("OPENAI_INTERMEDIATE_MODEL", "gpt-5.6-terra"),
+            "main_model": os.environ.get("OPENAI_MODEL", "gpt-5.6"),
+            "economy_reasoning_effort": _env_choice("OPENAI_ECONOMY_REASONING_EFFORT", "low", reasoning_values),
+            "intermediate_reasoning_effort": _env_choice("OPENAI_INTERMEDIATE_REASONING_EFFORT", "low", reasoning_values),
+            "main_reasoning_effort": _env_choice("OPENAI_REASONING_EFFORT", "medium", reasoning_values),
+            "reasoning_summary": "auto with retry without summary when unsupported",
+            "text_verbosity": _env_choice("OPENAI_TEXT_VERBOSITY", "low", {"low", "medium", "high"}),
+            "max_output_tokens": {
+                "economy": _env_int("OPENAI_ECONOMY_MAX_OUTPUT_TOKENS", 4096, 16),
+                "intermediate": _env_int("OPENAI_INTERMEDIATE_MAX_OUTPUT_TOKENS", 12288, 16),
+                "main": _env_int("OPENAI_MAX_OUTPUT_TOKENS", 16384, 16),
+            },
+            "compact_threshold": _env_int("OPENAI_COMPACT_THRESHOLD", 32000, 0),
+            "turn_warning_tokens": _env_int("OPENAI_TURN_WARNING_TOKENS", 100000, 0),
+            "transcription_model": os.environ.get("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"),
+        },
+        "capability_rules": {
+            "router": "Small answers have no tools; economy may use web; computer work is promoted to medium; low confidence falls back to main with web and computer.",
+            "computer": "Paths stay within the selected project; destructive shell commands and shell-form Git publication are blocked.",
+            "approvals": "Git commit/push and requested self-deployment use exact, expiring owner approval; visibility does not expand authority.",
+            "media": "Validated media is available for its turn only; traces retain binary type, size, and SHA-256, never raw bytes.",
+        },
+        "provider_limits": [
+            "Provider-hidden instructions and controls are not exposed to the application.",
+            "Raw chain-of-thought is not returned; only provider-returned reasoning summaries can be exported.",
+            "Hosted-search internals not returned in Responses API output are unavailable.",
+        ],
+    }
+
+
+def default_project_for_export() -> ProjectContext | None:
+    root = os.environ.get("AGENT_WORKSPACE_ROOT")
+    return ProjectContext("computer", Path(root).resolve()) if root else None
 
 
 def _env_int(name: str, default: int, minimum: int) -> int:
