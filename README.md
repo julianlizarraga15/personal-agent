@@ -37,17 +37,25 @@ The image includes Git but expects the Codex CLI and its authentication to be su
 
 ## Telegram usage with Docker Compose
 
-Both the Telegram bot and coding worker run in containers. No local Python installation is required. The bot launches worker containers through the Docker socket, so run this on a machine with Docker Engine or Docker Desktop available.
+The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. It does not need an OpenAI API key. The bot has a writable `workspace/` mount, but no Docker socket, SSH key, or Git push credential.
 
-Create a local `.env` file from the example and fill in your Telegram bot token, numeric Telegram user ID, and OpenAI API key:
+Create `.env`, build the image, and perform the one-time device login. The `codex-state` volume preserves authentication and Codex configuration across container replacement.
 
 ```bash
 cp .env.example .env
-# edit .env
-docker compose up --build
+# edit the Telegram token and numeric owner ID
+docker compose build bot
+docker compose run --rm codex-login
+docker compose up -d bot deployer
 ```
 
-The bot uses long polling and accepts messages only from `TELEGRAM_ALLOWED_USER_ID`. The mounted `workspace/` directory is the default computer context, so ordinary messages can work there immediately. To narrow the context to one project directory, use:
+Open the printed verification URL, enter its code, and wait for the command to report success. Never copy `auth.json` into an image or repository.
+
+The bot accepts only `TELEGRAM_ALLOWED_USER_ID`. Ordinary text starts an ephemeral Codex thread in the workspace root. `/project <directory>` validates a directory beneath that root and starts a fresh thread there; `/new` starts fresh at the root; `/stop` interrupts the active turn and discards the session; `/help` lists the same pass-1 surface. One turn may run per user. Restarting the bot forgets every thread but preserves login state.
+
+Threads use Codex defaults with `Sandbox.workspace_write` and deny-all approvals. Codex may edit the selected workspace automatically. Requests for escalation, writes outside the sandbox, shell networking, Docker access, or credential-backed Git push fail without an approval prompt. Images and audio are rejected in pass 1; send text instead.
+
+To select a project and work across continued turns:
 
 ```text
 /project my-project
@@ -59,6 +67,12 @@ Then send ordinary text messages:
 Add input validation to the API
 Now add tests for that validation
 ```
+
+Agent replies use the existing safe Telegram Markdown renderer. A single debounced activity message reports coarse thinking, command, and file-change progress.
+
+### Dormant Responses rollback
+
+The previous Responses implementation remains in the source but is not registered in Codex mode. To roll back manually, set `AGENT_BACKEND=responses`, add `OPENAI_API_KEY` to the bot through a private local Compose override, rebuild, and restart the bot. That mode restores media, routing, approval, usage, trace, `/run`, and self-deployment commands; it also requires restoring any Docker/Git mounts needed for those legacy operations. Do not commit the override or credentials.
 
 You can also send one Telegram photo or JPEG, PNG, WEBP, or non-animated GIF document, with an optional caption explaining what to inspect or change. Images are validated, limited to 10 MiB by default (`TELEGRAM_MAX_IMAGE_BYTES`), and sent to the model at high detail. The image is available only during that turn; resend it for follow-up visual questions. Albums, stickers, animation, video, PDFs, and image generation are not supported.
 

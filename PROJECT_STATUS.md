@@ -1,8 +1,18 @@
 # Project status
 
-Last updated: 2026-07-29
+Last updated: 2026-07-30
 
 ## Current state
+
+- Pass 1 defaults Telegram conversation to pinned `openai-codex==0.144.4` through one application-scoped `AsyncCodex` instance.
+- Authorized users receive ephemeral, memory-only Codex threads with the selected directory as `cwd`, workspace-write sandboxing, deny-all approvals, and no application model/personality/instruction overrides.
+- Codex mode is text-only and registers `/project`, `/new`, `/stop`, and `/help`. It debounces one coarse activity message and renders the completed agent message through the existing Markdown renderer.
+- `/new` resets to the workspace root, `/project` validates beneath it and starts fresh, and `/stop` interrupts and discards an active session. Restart loses conversations but preserves ChatGPT authentication in the private `codex-state` volume.
+- The bot service no longer receives the Docker socket, Git SSH key, Git SSH command, or OpenAI API key. The deployer alone retains Docker authority; pass-1 deployment is manual.
+- A `codex-login` management service performs one-time ChatGPT device-code login into `CODEX_HOME` without baking authentication into the image.
+- `AGENT_BACKEND=responses` retains the previous implementation as dormant rollback code. Its legacy Telegram commands and media handlers are not registered in Codex mode.
+
+## Dormant Responses rollback baseline
 
 - Repository setup and initial project structure are present.
 - A model-backed conversational agent prototype is present in `src/agent.py`.
@@ -27,11 +37,18 @@ Last updated: 2026-07-29
 
 ## Last stopping point
 
-- Owner-transparent execution tracing is implemented, tested, published to `origin/main`, and deployed to the bot and persistent deployer services.
+- The Codex SDK pass-1 implementation and automated tests are complete locally. It has not been committed, published, rebuilt, restarted, or manually exercised against ChatGPT/Telegram.
 
 ## Next steps
 
-- Continue normal product work; update the stable deployer image manually only when deployment infrastructure changes.
+- Build the bot image, run `docker compose run --rm codex-login`, then manually start the bot from the trusted host.
+- Verify authentication survives restart and that restart begins a fresh conversation.
+- Exercise normal chat, repository read/edit/test work, `/new`, `/stop`, `/project`, progress editing, and formatted final responses.
+- Attempt outside-workspace writing, shell networking, Docker access, and Git push; verify each fails without an approval prompt.
+- Keep `AGENT_BACKEND=responses` rollback dormant until pass 1 has been validated live; remove it only in pass 2.
+
+### Historical Responses follow-ups
+
 - Exercise `/usage` after a non-sensitive model turn, then verify its daily and lifetime totals remain after a later bot restart.
 - Exercise `/prompt`, `/traces`, and partial/completed `/trace` exports with non-sensitive live content, verify live activity editing, and confirm seven-day retention on the persistent mount.
 - Exercise each model route, compaction, and a bounded file-read continuation in a non-sensitive live Telegram session.
@@ -45,6 +62,10 @@ Last updated: 2026-07-29
 
 - Keep changes focused and preserve user changes.
 - Do not expose secrets or weaken the isolation boundary.
+- Text-only support, plain Codex behavior, ephemeral conversations, coarse progress, and manual deployment are intentional for pass 1.
+- Codex uses the signed-in ChatGPT subscription and included limits, not API billing. `CODEX_HOME` persists only its authentication and configuration.
+- Codex may edit the selected workspace automatically. Deny-all approvals mean escalation attempts fail rather than prompting the Telegram owner.
+- The statements below describe the dormant Responses implementation rather than the default backend.
 - The OpenAI model is hosted remotely and is called through `OPENAI_API_KEY`; the local bot program receives tool requests and executes them in its allowed container workspace.
 - Conversation sessions are in memory and are lost when the bot restarts; direct OpenAI usage metadata persists outside Git at `/workspace/.personal-agent-state/usage.sqlite3` by default.
 - The conversational agent uses the mounted workspace as its default `computer` context; `/project` can narrow it to a subdirectory.
@@ -58,7 +79,9 @@ Last updated: 2026-07-29
 
 ## Validation
 
-- Current validation: 139 unit tests pass via `python -m pytest`, including durable trace reopen/restart behavior, ordered concurrent writes, partial and completed exports, retention, permissions, recursive redaction, binary hashing, multipart exports, prompt disclosure, owner authorization, direct and fallback routing traces, complete versus model-bounded output, reasoning-summary fallback, durable usage, media handling, approvals, compaction, and deployment behavior. Python compilation and `git diff --check` also pass.
+- Current validation: all 152 tests pass via `python -m pytest`; `git diff --check` and `docker compose config --quiet` pass; the bot image builds successfully with pinned SDK/runtime `0.144.4`.
+- The built image imports the SDK, backend, and Telegram modules, contains neither the Docker nor SSH client executable, and successfully starts and stops the bundled Codex app-server with an existing temporary `CODEX_HOME` mount.
+- Live device login, ChatGPT turns, Telegram exchanges, authentication restart persistence, and outside-workspace/network/Docker/Git-push denial checks remain manual and have not been run. Nothing was published or restarted.
 - Both the bot and deployer images build successfully with the tracing changes, their Python modules import inside the built images, and the recreated services report healthy/running after deployment.
 - The audio- and image-capable bot image builds successfully; its production audio handler registers and synchronous model calls can be offloaded from the event loop. Neither media path has yet been exercised against live Telegram or OpenAI services.
 - The durable-usage bot image built successfully and the replacement bot reached Docker health; a live post-deployment `/usage` exchange and model call have not yet been exercised.

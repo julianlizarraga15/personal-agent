@@ -4,6 +4,11 @@ This project runs an agent that can modify and push code, so deployment security
 
 ## Controls
 
+- The default Codex backend starts ephemeral threads with workspace-write sandboxing and deny-all approvals. It may edit only the selected mounted workspace; attempted escalation fails without prompting in Telegram.
+- The bot has no Docker socket, SSH private key, Git push credential, or OpenAI API key. `CODEX_HOME` is a private Docker volume containing ChatGPT authentication and Codex configuration and must never be baked into an image or committed.
+- Shell networking, Docker access, writes outside the selected workspace, and credential-backed Git publication are outside the pass-1 bot boundary. The separate deployer is the only service with Docker authority, and deployment is host-initiated.
+- Codex-mode sessions and Telegram-to-thread mappings are memory-only. Restarting discards conversations while retaining authentication in `CODEX_HOME`.
+- Images, audio, legacy approvals, usage/trace exports, `/run`, and self-deployment commands are not registered in Codex mode. The controls below describe dormant `AGENT_BACKEND=responses` rollback behavior where applicable.
 - Worker tasks run in short-lived Docker containers with a temporary checkout. The checkout is removed when the worker exits.
 - The worker publishes to the checked-out default branch (`main` or `master`) after the task and tests complete.
 - The Telegram bot accepts commands only from the numeric `TELEGRAM_ALLOWED_USER_ID`.
@@ -25,7 +30,7 @@ This project runs an agent that can modify and push code, so deployment security
 
 ## Deployment requirements
 
-- Run the bot only on a trusted host. Mounting `/var/run/docker.sock` effectively gives the bot control of the host Docker daemon.
+- Run the bot only on a trusted host. The bot does not mount `/var/run/docker.sock`; the deployer does and therefore has effective control of the host Docker daemon.
 - The deployer allows only the configured Compose file and `personal-agent-bot:*` image family. It has Docker-socket authority and must be treated as a host-control boundary; update its separate image explicitly from the host.
 - Use a dedicated Git identity/token with the minimum repository permissions needed to create branches and push them.
 - Do not mount the host filesystem, SSH agent, cloud credentials, or personal home directory into the bot or worker containers. The only intended host mount is the dedicated project `workspace/` directory.

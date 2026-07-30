@@ -27,12 +27,15 @@ from PIL import Image, UnidentifiedImageError
 from telegram.error import BadRequest
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext, prompt_export
+from codex_backend import CodexBackend, CodexBackendError, CodexTurnDiscarded
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 
 
 LOGGER = logging.getLogger(__name__)
+CODEX_BACKEND_KEY = "codex_backend"
+CODEX_STATUS_DEBOUNCE_SECONDS = 1.5
 
 STATUS_MESSAGES = {
     "cloning repository": "Cloning repository…",
@@ -519,6 +522,141 @@ def required_settings(environ: dict[str, str] | None = None) -> tuple[str, int, 
     except ValueError as exc:
         raise RuntimeError("TELEGRAM_ALLOWED_USER_ID must be an integer") from exc
     return token, allowed_id, values.get("WORKER_IMAGE", "repository-worker:latest")
+
+
+def selected_backend(environ: dict[str, str] | None = None) -> str:
+    values = os.environ if environ is None else environ
+    backend = values.get("AGENT_BACKEND", "codex").strip().lower()
+    if backend not in {"codex", "responses"}:
+        raise RuntimeError("AGENT_BACKEND must be 'codex' or 'responses'")
+    return backend
+
+
+def _codex_backend(context: object) -> CodexBackend:
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", None)
+    if not isinstance(bot_data, dict) or CODEX_BACKEND_KEY not in bot_data:
+        raise RuntimeError("Codex backend is not initialized")
+    return bot_data[CODEX_BACKEND_KEY]
+
+
+def _workspace_root() -> Path:
+    return Path(os.environ.get("AGENT_WORKSPACE_ROOT", "/workspace")).resolve()
+
+
+async def codex_select_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    if len(context.args) != 1:
+        await message.reply_text("Usage: /project <directory-name>")
+        return
+    try:
+        project_path = workspace_project_path(_workspace_root(), context.args[0])
+    except ValueError:
+        await message.reply_text("Projects must be inside the configured workspace.")
+        return
+    if not project_path.is_dir():
+        await message.reply_text(f"I can’t find a project directory at {project_path}.")
+        return
+    try:
+        await _codex_backend(context).new_session(user.id, project_path)
+    except CodexBackendError as exc:
+        await message.reply_text(exc.user_message)
+        return
+    await message.reply_text("Project selected. A fresh Codex conversation is ready there.")
+
+
+async def codex_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    try:
+        await _codex_backend(context).new_session(user.id, _workspace_root())
+    except CodexBackendError as exc:
+        await message.reply_text(exc.user_message)
+        return
+    await message.reply_text("New Codex session started in the workspace root.")
+
+
+async def codex_stop_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    await _codex_backend(context).stop_session(user.id)
+    await message.reply_text("Session stopped and discarded.")
+
+
+async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    await message.reply_text(
+        "Chat normally to work with Codex in the configured workspace.\n"
+        "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
+        "Images and audio are not supported in pass 1."
+    )
+
+
+async def codex_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    await message.reply_text("Images and audio are not supported in pass 1. Please send text instead.")
+
+
+async def codex_conversational_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    activity_message = await message.reply_text("Starting Codex…")
+    last_edit = 0.0
+    last_status = "Starting Codex…"
+
+    async def update_status(status: str) -> None:
+        nonlocal last_edit, last_status
+        now = time.monotonic()
+        if status == last_status or now - last_edit < CODEX_STATUS_DEBOUNCE_SECONDS:
+            return
+        editor = getattr(activity_message, "edit_text", None)
+        if editor is None:
+            return
+        try:
+            await editor(status)
+            last_status = status
+            last_edit = now
+        except Exception:
+            LOGGER.warning("Codex activity update failed user_id=%s", user.id)
+
+    try:
+        response = await _codex_backend(context).run_turn(
+            user.id,
+            message.text or "",
+            default_cwd=_workspace_root(),
+            on_status=update_status,
+        )
+    except CodexTurnDiscarded:
+        return
+    except CodexBackendError as exc:
+        await message.reply_text(exc.user_message)
+        final_status = "Codex failed."
+    else:
+        await _reply_agent_response(message, response)
+        final_status = "Completed."
+    editor = getattr(activity_message, "edit_text", None)
+    if editor is not None:
+        try:
+            await editor(final_status)
+        except Exception:
+            LOGGER.warning("Final Codex activity update failed user_id=%s", user.id)
 
 
 async def run_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1397,16 +1535,57 @@ async def report_startup_deployment(application: object) -> None:
     )
 
 
+async def start_codex_application(application: object) -> None:
+    """Start the single SDK process and advertise only the pass-1 commands."""
+
+    from telegram import BotCommand
+
+    backend = application.bot_data[CODEX_BACKEND_KEY]  # type: ignore[attr-defined]
+    await backend.start()
+    await application.bot.set_my_commands(  # type: ignore[attr-defined]
+        [
+            BotCommand("project", "start fresh in a project directory"),
+            BotCommand("new", "start fresh at the workspace root"),
+            BotCommand("stop", "interrupt and discard the session"),
+            BotCommand("help", "show pass-1 commands"),
+        ]
+    )
+    Path("/tmp/personal-agent-ready").touch()
+
+
+async def stop_codex_application(application: object) -> None:
+    await application.bot_data[CODEX_BACKEND_KEY].close()  # type: ignore[attr-defined]
+
+
 def build_application(environ: dict[str, str] | None = None) -> Application:
     from telegram.ext import Application, CommandHandler
     from telegram.ext import MessageHandler, MessageReactionHandler, filters
 
     token, allowed_id, _ = required_settings(environ)
-    try:
-        configured_trace_store().purge()
-    except Exception:
-        LOGGER.exception("trace startup initialization failed")
-    application = Application.builder().token(token).concurrent_updates(True).post_init(report_startup_deployment).build()
+    backend_name = selected_backend(environ)
+    builder = Application.builder().token(token).concurrent_updates(True)
+    if backend_name == "codex":
+        builder = builder.post_init(start_codex_application).post_shutdown(stop_codex_application)
+    else:
+        try:
+            configured_trace_store().purge()
+        except Exception:
+            LOGGER.exception("trace startup initialization failed")
+        builder = builder.post_init(report_startup_deployment)
+    application = builder.build()
+    if backend_name == "codex":
+        application.bot_data[CODEX_BACKEND_KEY] = CodexBackend()
+        application.add_handler(CommandHandler("project", codex_select_project))
+        application.add_handler(CommandHandler("new", codex_new_session))
+        application.add_handler(CommandHandler("stop", codex_stop_session))
+        application.add_handler(CommandHandler(["help", "start"], codex_help_command))
+        media_filter = filters.PHOTO | filters.Document.IMAGE | filters.VOICE | filters.AUDIO | filters.Document.AUDIO
+        for extension in ("flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "ogg", "wav", "webm"):
+            media_filter |= filters.Document.FileExtension(extension)
+        application.add_handler(MessageHandler(media_filter, codex_media_message))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, codex_conversational_message))
+        return application
+
     application.add_handler(CommandHandler("run", run_command))
     application.add_handler(CommandHandler("project", select_project))
     application.add_handler(CommandHandler("new", new_session))
@@ -1444,7 +1623,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     LOGGER.info("bot starting")
-    build_application().run_polling(allowed_updates=("message", "message_reaction"))
+    updates = ("message",) if selected_backend() == "codex" else ("message", "message_reaction")
+    build_application().run_polling(allowed_updates=updates)
     return 0
 
 

@@ -3,38 +3,36 @@
 ## Start locally
 
 1. Copy `.env.example` to `.env` and fill in the Telegram token and allowed user ID.
-2. Build and start the services:
+2. Build the bot and complete one-time ChatGPT device login:
 
    ```bash
-   docker compose up --build
+   docker compose build bot
+   docker compose run --rm codex-login
    ```
 
-3. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text. `/run <git-url> <task>` remains available for one-shot tasks.
+3. Start the services with `docker compose up -d bot deployer`.
+4. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text. Pass 1 is text-only; `/run` and deployment commands are unavailable.
 
 ## Health checks
 
 - Confirm both images build successfully with `docker compose build`.
 - Confirm the test suite with `python -m pytest` (or the development environment equivalent).
 - Inspect `docker compose logs -f bot` while submitting a task.
-- Send `/usage` to inspect current-session, current UTC day, and all recorded direct-API token totals, cache activity, web-search calls, and the dated cost estimate. Compare material spend with the OpenAI billing dashboard.
-- Send `/prompt` to verify the active application instructions and settings. Send `/traces`, then `/trace <turn-id>`, to verify that a running or completed turn can be exported. Concatenate numbered `.partNNN-of-NNN` files in order before decompressing a multipart gzip export.
-- A successful legacy worker reports a `codex/*` branch, commit, and test status.
-- The conversational agent requires `OPENAI_API_KEY` and operates only inside the mounted `workspace/` directory.
-- The bot keeps the selected project and recent conversation in memory; restart the bot or use `/new` to clear it.
-- Self-deployment requires the repository at `workspace/personal-agent` and a running, healthy `deployer` service. `HOST_WORKSPACE_DIR`, `GIT_SSH_KEY_PATH`, and `GIT_KNOWN_HOSTS_PATH` must be absolute host paths so Compose can safely recreate the bot from inside the deployer.
-- Confirm controller availability with `docker compose ps deployer` and `/pending` before requesting deployment.
+- Confirm `/help` lists only `/project`, `/new`, `/stop`, and `/help`.
+- Confirm a normal text turn, continued context, repository read/edit/test work, `/new`, `/project`, `/stop`, progress editing, and Markdown rendering.
+- Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
+- Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
 
 ## Common failures
 
 - Missing environment variables: check `.env` and run `docker compose config`.
-- Docker worker cannot start: verify Docker Engine is running and the socket mount is available to the bot.
-- Clone or push failure: verify repository access and the Git credential used by the worker.
-- Codex cannot start: verify the CLI and its authentication are available inside the worker runtime.
+- Codex sign-in missing: rerun `docker compose run --rm codex-login` and protect the `codex-state` volume.
+- Codex transport failure: retry once, then restart the bot and inspect content-free container logs.
+- Subscription limit: wait for the ChatGPT Codex limit to reset; pass 1 does not fall back to API billing.
+- Sandbox denial: keep the request inside the selected workspace and do not expect an approval prompt.
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
-- Agent tool failure: verify the project exists under `workspace/`, the OpenAI API key is configured, and the bot image has been rebuilt after dependency changes.
-- Image rejected: use a JPEG, PNG, WEBP, or non-animated GIF under `TELEGRAM_MAX_IMAGE_BYTES` (10 MiB by default). Resend the image for later visual follow-ups because image bytes are not retained after the turn.
-- Audio rejected: use OGG, MP3/MPEG/MPGA, MP4/M4A, WAV, WebM, or FLAC under `TELEGRAM_MAX_AUDIO_BYTES` (20 MB by default) and `TELEGRAM_MAX_AUDIO_SECONDS` (10 minutes by default). Telegram documents need a supported extension or an `audio/*` MIME type to reach the handler. Check OpenAI connectivity when validation succeeds but transcription fails.
-- Unexpected API cost: inspect per-response usage logs and `/usage`, confirm the intended route/model, and check whether repeated file or command output crossed the compaction or high-usage threshold.
+- Agent tool failure: verify the selected project exists under `workspace/` and rebuild after dependency changes.
+- Image/audio rejected: pass 1 accepts text only.
 - Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 - State storage full/unavailable: free space or restore the mount. The deployer retains an active request when failure state cannot be persisted and resumes it after restart. The bot continues answering when the usage ledger or trace database cannot be written, reports durable usage totals as unavailable or incomplete, logs trace write loss without private content, and resumes recording future requests when storage recovers.
@@ -43,7 +41,11 @@
 
 Stop services with `docker compose down`. Failed tasks should not publish a branch; inspect logs before retrying. For a partially-created remote branch, review it first, then delete it through the Git host only after confirming it is safe to remove.
 
-## Self-deployment recovery
+## Manual deployment and Responses rollback
+
+Build and restart from the trusted host; the Telegram bot must not publish, rebuild, or restart itself. For emergency rollback, set `AGENT_BACKEND=responses`, inject `OPENAI_API_KEY` and any legacy privileged mounts through a private local Compose override, then rebuild and recreate the bot. Never commit that override.
+
+## Dormant self-deployment recovery
 
 When the agent is asked to modify itself, keep the checkout on `main`. One approval covers tests, direct publication, queueing, rebuild, and restart. The persistent deployer tags the current image, rebuilds only the bot, verifies Docker health for a stability window, and rolls back automatically when startup fails. `/pending` reads the durable manifest even when conversational state has been lost.
 

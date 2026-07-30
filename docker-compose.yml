@@ -12,13 +12,14 @@ services:
       dockerfile: Dockerfile.bot
     image: ${BOT_IMAGE:-personal-agent-bot:latest}
     environment:
+      AGENT_BACKEND: ${AGENT_BACKEND:-codex}
+      CODEX_HOME: /codex-home
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
       TELEGRAM_MAX_IMAGE_BYTES: ${TELEGRAM_MAX_IMAGE_BYTES:-10485760}
       TELEGRAM_MAX_AUDIO_BYTES: ${TELEGRAM_MAX_AUDIO_BYTES:-20000000}
       TELEGRAM_MAX_AUDIO_SECONDS: ${TELEGRAM_MAX_AUDIO_SECONDS:-600}
       WORKER_IMAGE: repository-worker:latest
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-gpt-4o-mini-transcribe}
       OPENAI_ROUTER_ENABLED: ${OPENAI_ROUTER_ENABLED:-1}
       OPENAI_ROUTER_MODEL: ${OPENAI_ROUTER_MODEL:-gpt-5-nano}
@@ -38,26 +39,17 @@ services:
       TRACE_DB_PATH: ${TRACE_DB_PATH:-/trace-state/traces.sqlite3}
       TRACE_RETENTION_DAYS: ${TRACE_RETENTION_DAYS:-7}
       TRACE_EXPORT_PART_BYTES: ${TRACE_EXPORT_PART_BYTES:-47185920}
-      AGENT_WORKSPACE_ROOT: /workspace/personal-agent
+      AGENT_WORKSPACE_ROOT: /workspace
       SELF_REPOSITORY_PATH: /workspace/personal-agent
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
       DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
       BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
       DEPLOYMENT_STATE_DIR: /workspace/.personal-agent-state
       HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
-      GIT_SSH_COMMAND: >-
-        ssh -i /run/secrets/github_key
-        -o IdentitiesOnly=yes
-        -o UserKnownHostsFile=/run/secrets/github_known_hosts
-        -o StrictHostKeyChecking=yes
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
+      - codex-state:/codex-home
       - trace-state:/trace-state
-      - ${GIT_SSH_KEY_PATH:-./secrets/personal-agent-github}:/run/secrets/github_key:ro
-      - ${GIT_KNOWN_HOSTS_PATH:-./secrets/known_hosts}:/run/secrets/github_known_hosts:ro
-    depends_on:
-      - worker
     healthcheck:
       test: ["CMD", "python", "-c", "from pathlib import Path; import os; assert Path('/tmp/personal-agent-ready').exists(); os.kill(1, 0)"]
       interval: 2s
@@ -80,7 +72,6 @@ services:
       HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       WORKER_IMAGE: ${WORKER_IMAGE:-repository-worker:latest}
       TRACE_DB_PATH: ${TRACE_DB_PATH:-/trace-state/traces.sqlite3}
       TRACE_RETENTION_DAYS: ${TRACE_RETENTION_DAYS:-7}
@@ -92,5 +83,18 @@ services:
       - trace-state:/trace-state
     restart: unless-stopped
 
+  codex-login:
+    profiles: ["management"]
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    image: ${BOT_IMAGE:-personal-agent-bot:latest}
+    entrypoint: ["python", "-m", "codex_login"]
+    environment:
+      CODEX_HOME: /codex-home
+    volumes:
+      - codex-state:/codex-home
+
 volumes:
+  codex-state:
   trace-state:

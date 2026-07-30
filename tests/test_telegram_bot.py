@@ -877,7 +877,9 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
 
     def test_main_explicitly_requests_message_reaction_updates(self) -> None:
         application = SimpleNamespace(run_polling=unittest.mock.Mock())
-        with patch("telegram_bot.build_application", return_value=application):
+        with patch("telegram_bot.build_application", return_value=application), patch.dict(
+            os.environ, {"AGENT_BACKEND": "responses"}
+        ):
             self.assertEqual(telegram_bot.main([]), 0)
 
         application.run_polling.assert_called_once_with(allowed_updates=("message", "message_reaction"))
@@ -886,7 +888,11 @@ class ApprovalReactionTests(unittest.IsolatedAsyncioTestCase):
         from telegram.ext import CommandHandler, MessageHandler, MessageReactionHandler
 
         application = telegram_bot.build_application(
-            {"TELEGRAM_BOT_TOKEN": "123:token", "TELEGRAM_ALLOWED_USER_ID": "42"}
+            {
+                "TELEGRAM_BOT_TOKEN": "123:token",
+                "TELEGRAM_ALLOWED_USER_ID": "42",
+                "AGENT_BACKEND": "responses",
+            }
         )
         handlers = [handler for group in application.handlers.values() for handler in group]
 

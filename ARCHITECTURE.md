@@ -6,7 +6,7 @@ An autonomous coding agent controlled through Telegram.
 
 ## Worker responsibilities
 
-- Receive a text task, validated image turn, or transcribed audio turn
+- Receive a text task (Codex pass 1); the dormant Responses path also supports validated image and transcribed audio turns
 - Clone or open a project repository
 - Inspect existing code
 - Run a coding agent
@@ -16,7 +16,13 @@ An autonomous coding agent controlled through Telegram.
 
 ## Current architecture
 
-Telegram long polling → authorized input + durable trace turn + live activity message → in-memory user session → cost-aware nano router → small answer or Luna/Terra/Sol Responses API → selected web/computer tools → redacted trace completion/export
+Telegram long polling → authorized text input → ephemeral in-memory Telegram session → official Codex Python SDK thread → workspace-write sandbox → debounced activity + rendered final answer
+
+One application-scoped `AsyncCodex` process serves all authorized turns. Each Telegram user has at most one ephemeral thread and active turn. A thread starts with the selected project as `cwd`, `Sandbox.workspace_write`, and deny-all approvals, without application overrides for model, personality, base instructions, or developer instructions. `/new`, `/project`, and `/stop` replace or discard the mapping; mappings are never persisted. `CODEX_HOME` is a private volume used only for authentication and Codex configuration.
+
+The bot container can write the mounted workspace but has no Docker socket, SSH key, OpenAI API key, or Git push credential. The separate deployer retains Docker authority. Codex-mode Telegram registration includes text, `/project`, `/new`, `/stop`, and `/help`; media and legacy operational commands are unavailable. Deployment is a manual host operation in pass 1.
+
+The previous Responses architecture below is dormant rollback code selected only with `AGENT_BACKEND=responses`.
 
 The session stores the optional legacy worker project, conversational computer context, compactable model input items, six short messages of router context, current-session usage totals, the active trace handle, and at most one pending approval. Each direct OpenAI response also appends content-free usage metadata to a SQLite ledger in the host-persistent state directory. A separate owner-only SQLite trace database in a dedicated Docker volume stores ordered redacted events for seven days by default and is mounted only into bot and deployer. Ordinary messages can use constrained computer tools in the explicitly-mounted workspace. `/project` narrows that context to a directory below the workspace, `/new` starts over in the workspace root, `/usage` reports current-session, current UTC day, and lifetime recorded totals, `/prompt` exports live application instructions, `/traces` and `/trace` expose retained traces, and `/stop` forgets the session. Session changes never delete either durable store. The legacy worker remains available for the one-shot `/run` flow and future stronger isolation; its Codex CLI consumption is outside the usage ledger but its observable execution is traced.
 
