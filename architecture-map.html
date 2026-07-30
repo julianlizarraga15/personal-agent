@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Agent — Architecture Map</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b10;
+      --panel: #0e131b;
+      --panel-2: #121923;
+      --line: #263141;
+      --text: #edf3f8;
+      --muted: #8793a3;
+      --green: #78f0b0;
+      --cyan: #67d7f7;
+      --amber: #ffc86b;
+      --pink: #f58db1;
+      --purple: #b4a2ff;
+      --red: #ff737e;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { margin: 0; min-height: 100%; background: var(--bg); }
+
+    body {
+      min-width: 760px;
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-feature-settings: "tnum" 1, "ss01" 1;
+    }
+
+    button { font: inherit; }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .bar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(14, 19, 27, .92);
+      box-shadow: 0 12px 40px rgba(0,0,0,.24);
+    }
+
+    .brand {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px 0 8px;
+      border-radius: 10px;
+      background: var(--text);
+      color: var(--bg);
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 25px;
+      height: 25px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: var(--bg);
+      color: var(--green);
+      font: 800 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .brand-copy { display: grid; gap: 1px; }
+    .brand-copy strong { font-size: 12px; letter-spacing: .08em; }
+    .brand-copy small { font-size: 8px; color: #53606e; letter-spacing: .14em; }
+
+    .tabs {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .tab, .layer {
+      height: 40px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 0 15px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      transition: 150ms ease;
+    }
+
+    .tab:hover, .layer:hover { color: var(--text); background: #151d28; }
+    .tab[aria-selected="true"] { color: var(--text); background: #192330; border-color: #2a3849; }
+
+    .snapshot {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 12px;
+      border: 1px solid #263442;
+      border-radius: 10px;
+      background: #101821;
+      color: var(--muted);
+      font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .08em;
+      white-space: nowrap;
+    }
+
+    .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 5px rgba(120,240,176,.09), 0 0 18px rgba(120,240,176,.35);
+    }
+
+    .viewport {
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background:
+        linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+        radial-gradient(circle at 50% 15%, rgba(103,215,247,.055), transparent 32%),
+        var(--panel);
+      background-size: 28px 28px, 28px 28px, auto, auto;
+    }
+
+    .view {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 8px;
+    }
+
+    .view.active { display: flex; }
+
+    .map {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      height: 100%;
+      max-height: none;
+    }
+
+    svg text { user-select: none; }
+    .zone { fill: rgba(8,11,16,.44); stroke: #263141; stroke-width: 1.25; }
+    .zone-dash { stroke-dasharray: 8 7; }
+    .zone-title-bg { fill: #182230; stroke: #2a394a; }
+    .zone-title { fill: #aab5c3; font-size: 11px; font-weight: 800; letter-spacing: .13em; }
+
+    .node { cursor: help; outline: none; }
+    .node .body { fill: #151d28; stroke: #2a3747; stroke-width: 1.4; transition: 150ms ease; }
+    .node:hover .body, .node:focus .body { fill: #1a2532; stroke: #526579; }
+    .node .icon-bg { fill: #0d131b; }
+    .node .icon { fill: var(--text); font: 800 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle; }
+    .node .title { fill: var(--text); font-size: 16px; font-weight: 760; }
+    .node .meta { fill: var(--muted); font-size: 10.5px; font-weight: 560; }
+    .node .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .node .status { font-size: 9px; font-weight: 850; letter-spacing: .1em; }
+    .node .tiny { fill: var(--muted); font-size: 9px; }
+
+    .green .body { stroke: rgba(120,240,176,.43); }
+    .green .icon-bg { fill: rgba(120,240,176,.13); }
+    .green .icon, .green .status { fill: var(--green); }
+    .cyan .body { stroke: rgba(103,215,247,.43); }
+    .cyan .icon-bg { fill: rgba(103,215,247,.13); }
+    .cyan .icon, .cyan .status { fill: var(--cyan); }
+    .amber .body { stroke: rgba(255,200,107,.42); }
+    .amber .icon-bg { fill: rgba(255,200,107,.13); }
+    .amber .icon, .amber .status { fill: var(--amber); }
+    .pink .body { stroke: rgba(245,141,177,.42); }
+    .pink .icon-bg { fill: rgba(245,141,177,.13); }
+    .pink .icon, .pink .status { fill: var(--pink); }
+    .purple .body { stroke: rgba(180,162,255,.43); }
+    .purple .icon-bg { fill: rgba(180,162,255,.13); }
+    .purple .icon, .purple .status { fill: var(--purple); }
+    .red .body { stroke: rgba(255,115,126,.43); }
+    .red .icon-bg { fill: rgba(255,115,126,.13); }
+    .red .icon, .red .status { fill: var(--red); }
+    .idle { opacity: .62; }
+
+    .edge { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .edge.call { stroke: var(--cyan); marker-end: url(#arrow-cyan); }
+    .edge.write { stroke: var(--pink); stroke-dasharray: 5 5; marker-end: url(#arrow-pink); }
+    .edge.mount { stroke: var(--amber); stroke-dasharray: 2 6; marker-end: url(#arrow-amber); }
+    .edge.publish { stroke: var(--purple); marker-end: url(#arrow-purple); }
+    .edge.control { stroke: var(--green); marker-end: url(#arrow-green); }
+    .edge.rollback { stroke: var(--red); stroke-dasharray: 7 5; marker-end: url(#arrow-red); }
+    .edge.dim { stroke: #405064; marker-end: url(#arrow-dim); }
+    .edge.bi { marker-start: url(#dot-cyan); }
+    .edge-label rect { fill: #0c1219; stroke: #283646; }
+    .edge-label text { fill: #9ba8b8; font-size: 9px; font-weight: 750; letter-spacing: .05em; text-anchor: middle; }
+
+    body.hide-call .edge.call, body.hide-call .label-call { opacity: .06; }
+    body.hide-write .edge.write, body.hide-write .label-write { opacity: .06; }
+    body.hide-mount .edge.mount, body.hide-mount .label-mount { opacity: .06; }
+    body.hide-control .edge.control, body.hide-control .edge.publish, body.hide-control .label-control { opacity: .06; }
+
+    .footer { justify-content: space-between; min-height: 50px; }
+    .layers { display: flex; gap: 5px; }
+    .layer { height: 32px; padding: 0 11px; border-color: #243142; }
+    .layer::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: currentColor; }
+    .layer[data-layer="call"] { color: var(--cyan); }
+    .layer[data-layer="write"] { color: var(--pink); }
+    .layer[data-layer="mount"] { color: var(--amber); }
+    .layer[data-layer="control"] { color: var(--green); }
+    .layer.off { color: #455160; opacity: .72; }
+
+    .hint {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 11px;
+      border: 1px solid #243142;
+      border-radius: 10px;
+      color: #687689;
+      font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .08em;
+    }
+
+    .hint kbd {
+      min-width: 18px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      padding: 0 4px;
+      border: 1px solid #3a4756;
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      color: #a2adba;
+      background: #121923;
+      font: inherit;
+    }
+
+    .tooltip {
+      position: fixed;
+      z-index: 20;
+      width: min(310px, calc(100vw - 28px));
+      padding: 12px;
+      border: 1px solid #3a4a5d;
+      border-radius: 12px;
+      background: rgba(12,17,24,.97);
+      box-shadow: 0 18px 60px rgba(0,0,0,.52);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(5px);
+      transition: opacity 100ms ease, transform 100ms ease;
+    }
+
+    .tooltip.show { opacity: 1; transform: translateY(0); }
+    .tooltip strong { display: block; margin-bottom: 6px; color: var(--text); font-size: 12px; }
+    .tooltip span { display: block; color: #98a5b5; font-size: 11px; line-height: 1.5; }
+
+    @media (max-width: 900px) {
+      .brand-copy small, .snapshot span { display: none; }
+      .tab { padding: 0 10px; }
+      .footer .hint { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="bar">
+      <div class="brand" aria-label="Personal Agent architecture map">
+        <div class="brand-mark">PA</div>
+        <div class="brand-copy"><strong>PERSONAL AGENT</strong><small>ARCHITECTURE MAP</small></div>
+      </div>
+      <nav class="tabs" aria-label="Architecture views">
+        <button class="tab" data-view="runtime" aria-selected="true">Runtime</button>
+        <button class="tab" data-view="files" aria-selected="false">Files</button>
+        <button class="tab" data-view="deploy" aria-selected="false">Deploy</button>
+        <button class="tab" data-view="images" aria-selected="false">Images</button>
+      </nav>
+      <div class="snapshot"><i class="pulse"></i><span>LIVE SNAPSHOT · 2026-07-29 UTC</span></div>
+    </header>
+
+    <main class="viewport">
+      <section class="view active" id="runtime" aria-label="Runtime architecture">
+        <svg class="map" viewBox="0 0 1400 760" role="img" aria-labelledby="runtime-title runtime-desc">
+          <title id="runtime-title">Live runtime architecture</title>
+          <desc id="runtime-desc">Telegram and GitHub connect to three Docker services. The bot and deployer are running; the worker is an exited template used to launch ephemeral jobs. OpenAI provides models, transcription and hosted web search.</desc>
+          <defs>
+            <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#67d7f7"/></marker>
+            <marker id="arrow-pink" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f58db1"/></marker>
+            <marker id="arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ffc86b"/></marker>
+            <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#b4a2ff"/></marker>
+            <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#78f0b0"/></marker>
+            <marker id="arrow-dim" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#405064"/></marker>
+            <marker id="dot-cyan" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4"><circle cx="5" cy="5" r="3" fill="#67d7f7"/></marker>
+          </defs>
+
+          <rect class="zone zone-dash" x="20" y="55" width="225" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="38" y="73" width="102" height="27" rx="8"/>
+          <text class="zone-title" x="53" y="91">EXTERNAL</text>
+
+          <rect class="zone" x="275" y="55" width="835" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="293" y="73" width="153" height="27" rx="8"/>
+          <text class="zone-title" x="308" y="91">TRUSTED HOST · DOCKER</text>
+
+          <rect class="zone zone-dash" x="1140" y="55" width="240" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="1158" y="73" width="111" height="27" rx="8"/>
+          <text class="zone-title" x="1173" y="91">PROVIDERS</text>
+
+          <path class="edge call bi" d="M220 194 C280 194 310 225 355 225"/>
+          <path class="edge call bi" d="M615 185 C760 112 1005 112 1155 181"/>
+          <path class="edge call" d="M615 258 C662 258 684 237 725 237"/>
+          <path class="edge publish" d="M355 301 C291 338 262 469 220 486"/>
+          <path class="edge publish" d="M725 294 C628 363 364 412 220 502"/>
+          <path class="edge mount" d="M450 339 L450 575"/>
+          <path class="edge write" d="M500 339 C510 460 605 500 660 575"/>
+          <path class="edge write" d="M548 339 C620 430 650 545 875 575"/>
+          <path class="edge control" d="M615 314 C691 363 1005 326 1017 253"/>
+          <path class="edge control" d="M680 575 C680 538 720 501 755 486"/>
+          <path class="edge control" d="M945 451 C1012 451 1020 324 1020 253"/>
+          <path class="edge call" d="M1263 286 L1263 421"/>
+
+          <g class="edge-label label-call" transform="translate(262 179)"><rect width="74" height="22" rx="7"/><text x="37" y="15">POLL + REPLY</text></g>
+          <g class="edge-label label-call" transform="translate(836 111)"><rect width="92" height="22" rx="7"/><text x="46" y="15">RESPONSES API</text></g>
+          <g class="edge-label label-control" transform="translate(775 333)"><rect width="80" height="22" rx="7"/><text x="40" y="15">DOCKER RUN</text></g>
+          <g class="edge-label label-mount" transform="translate(408 452)"><rect width="83" height="22" rx="7"/><text x="41.5" y="15">BIND MOUNT</text></g>
+
+          <g class="node cyan" tabindex="0" data-tip-title="Telegram" data-tip="Long polling input and replies. Only TELEGRAM_ALLOWED_USER_ID is accepted. Exact write, Git and deployment approvals return through the same chat.">
+            <rect class="body" x="52" y="140" width="168" height="108" rx="16"/>
+            <rect class="icon-bg" x="68" y="157" width="34" height="34" rx="10"/><text class="icon" x="85" y="179">TG</text>
+            <text class="title" x="114" y="174">Telegram</text>
+            <text class="meta" x="68" y="218">owner · input · approval</text>
+          </g>
+
+          <g class="node purple" tabindex="0" data-tip-title="GitHub origin" data-tip="git@github.com:julianlizarraga15/personal-agent.git. The live checkout and current task checkout are both on main at bab7256 in this snapshot.">
+            <rect class="body" x="52" y="447" width="168" height="108" rx="16"/>
+            <rect class="icon-bg" x="68" y="464" width="34" height="34" rx="10"/><text class="icon" x="85" y="486">GH</text>
+            <text class="title" x="114" y="481">GitHub</text>
+            <text class="meta" x="68" y="526">origin/main · publish</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Bot container" data-tip="personal-agent-bot-1 · personal-agent-bot:latest · image 2de64d861a36 · running and healthy. Handles Telegram, sessions, routing, model/tool loops, approvals, media and legacy workers.">
+            <rect class="body" x="355" y="128" width="260" height="211" rx="18"/>
+            <rect class="icon-bg" x="374" y="148" width="38" height="38" rx="11"/><text class="icon" x="393" y="172">BOT</text>
+            <text class="title" x="427" y="166">Bot</text>
+            <text class="status" x="427" y="183">● RUNNING · HEALTHY</text>
+            <rect x="374" y="207" width="222" height="1" fill="#293746"/>
+            <text class="meta" x="374" y="232">Telegram front end</text>
+            <text class="meta" x="374" y="254">session + router + agent</text>
+            <text class="meta" x="374" y="276">computer tools + approvals</text>
+            <text class="meta" x="374" y="298">media + trace + usage</text>
+            <text class="tiny mono" x="374" y="319">python -m telegram_bot</text>
+          </g>
+
+          <g class="node amber idle" tabindex="0" data-tip-title="Worker image / Compose placeholder" data-tip="personal-agent-worker-1 is exited by design. Legacy /run launches repository-worker:latest with docker run --rm; the job clones into a temporary directory, invokes Codex CLI, tests, pushes, then disappears.">
+            <rect class="body" x="725" y="146" width="210" height="165" rx="18"/>
+            <rect class="icon-bg" x="744" y="165" width="38" height="38" rx="11"/><text class="icon" x="763" y="189">W</text>
+            <text class="title" x="797" y="183">Worker</text>
+            <text class="status" x="797" y="200">○ EXITED TEMPLATE</text>
+            <text class="meta" x="744" y="232">ephemeral on /run</text>
+            <text class="meta" x="744" y="253">clone → Codex → test</text>
+            <text class="meta" x="744" y="274">push → auto-remove</text>
+            <text class="tiny mono" x="744" y="294">repository-worker:latest</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Persistent deployer" data-tip="personal-agent-deployer-1 · personal-agent-deployer:latest · image d1b841694d40 · running with restart unless-stopped. Polls durable queue, builds only the bot, replaces it, verifies health and rolls back when needed.">
+            <rect class="body" x="755" y="385" width="190" height="136" rx="18"/>
+            <rect class="icon-bg" x="774" y="404" width="38" height="38" rx="11"/><text class="icon" x="793" y="428">D</text>
+            <text class="title" x="827" y="422">Deployer</text>
+            <text class="status" x="827" y="439">● RUNNING</text>
+            <text class="meta" x="774" y="474">build · replace · verify</text>
+            <text class="meta" x="774" y="495">rollback authority</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Mounted workspace" data-tip="Host workspace bind-mounted read/write at /workspace into bot and deployer. It contains the nested live self-repository and durable usage/deployment state. /project may narrow the computer context below /workspace/personal-agent.">
+            <rect class="body" x="330" y="575" width="230" height="100" rx="16"/>
+            <rect class="icon-bg" x="347" y="592" width="34" height="34" rx="9"/><text class="icon" x="364" y="614">/</text>
+            <text class="title" x="396" y="608">/workspace</text>
+            <text class="meta mono" x="347" y="646">personal-agent/.git</text>
+            <text class="meta mono" x="347" y="664">.personal-agent-state/</text>
+          </g>
+
+          <g class="node pink" tabindex="0" data-tip-title="Durable host state" data-tip="Read/write by bot and deployer. usage.sqlite3 holds content-free usage accounting; deployment.json, lock and heartbeat coordinate self-deployment. This path is outside the nested Git repository.">
+            <rect class="body" x="585" y="575" width="190" height="100" rx="16"/>
+            <rect class="icon-bg" x="602" y="592" width="34" height="34" rx="9"/><text class="icon" x="619" y="614">DB</text>
+            <text class="title" x="651" y="608">State</text>
+            <text class="meta mono" x="602" y="646">usage.sqlite3</text>
+            <text class="meta mono" x="602" y="664">deployment.json</text>
+          </g>
+
+          <g class="node pink" tabindex="0" data-tip-title="Trace volume" data-tip="Named Docker volume personal-agent_trace-state mounted only into bot and deployer at /trace-state. traces.sqlite3 stores owner-visible redacted events with seven-day default retention.">
+            <rect class="body" x="800" y="575" width="190" height="100" rx="16"/>
+            <rect class="icon-bg" x="817" y="592" width="34" height="34" rx="9"/><text class="icon" x="834" y="614">TR</text>
+            <text class="title" x="866" y="608">Trace volume</text>
+            <text class="meta mono" x="817" y="646">/trace-state/</text>
+            <text class="meta mono" x="817" y="664">traces.sqlite3</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Docker daemon authority" data-tip="The bot and deployer bind-mount /var/run/docker.sock read/write. This is the host-control boundary used for ephemeral workers and self-deployment.">
+            <rect class="body" x="975" y="145" width="115" height="108" rx="16"/>
+            <rect class="icon-bg" x="992" y="162" width="34" height="34" rx="9"/><text class="icon" x="1009" y="184">DK</text>
+            <text class="title" x="992" y="217">Docker</text>
+            <text class="meta mono" x="992" y="235">docker.sock</text>
+          </g>
+
+          <g class="node cyan" tabindex="0" data-tip-title="OpenAI" data-tip="Remote provider. GPT-5 nano routes; Luna handles ordinary reasoning/web; Terra handles routine computer work; Sol handles difficult or deployment work. Audio uses gpt-4o-mini-transcribe.">
+            <rect class="body" x="1155" y="128" width="210" height="158" rx="18"/>
+            <rect class="icon-bg" x="1174" y="147" width="38" height="38" rx="11"/><text class="icon" x="1193" y="171">AI</text>
+            <text class="title" x="1227" y="165">OpenAI</text>
+            <text class="meta" x="1174" y="211">nano → route</text>
+            <text class="meta" x="1174" y="232">Luna · Terra · Sol</text>
+            <text class="meta" x="1174" y="253">Responses + transcription</text>
+          </g>
+
+          <g class="node cyan" tabindex="0" data-tip-title="Hosted web search" data-tip="Selected main-model turns may call OpenAI's hosted web_search tool. Results and citations return through the Responses API; they are treated as untrusted external data.">
+            <rect class="body" x="1155" y="421" width="210" height="113" rx="16"/>
+            <rect class="icon-bg" x="1173" y="439" width="34" height="34" rx="9"/><text class="icon" x="1190" y="461">WEB</text>
+            <text class="title" x="1222" y="455">Hosted search</text>
+            <text class="meta" x="1173" y="498">current info · citations</text>
+            <text class="meta" x="1173" y="517">no local authority</text>
+          </g>
+        </svg>
+      </section>
+
+      <section class="view" id="files" aria-label="Filesystem and mount architecture">
+        <svg class="map" viewBox="0 0 1400 760" role="img" aria-labelledby="files-title files-desc">
+          <title id="files-title">Directories, repositories and mounts</title>
+          <desc id="files-desc">The host workspace contains durable state and a nested live Git repository. Bot and deployer share that workspace, the trace volume and Docker socket. Only the bot receives read-only Git SSH secret mounts.</desc>
+          <defs>
+            <marker id="files-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ffc86b"/></marker>
+            <marker id="files-pink" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f58db1"/></marker>
+          </defs>
+
+          <rect class="zone" x="25" y="55" width="585" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="43" y="73" width="125" height="27" rx="8"/><text class="zone-title" x="58" y="91">HOST FILESYSTEM</text>
+          <rect class="zone" x="790" y="55" width="585" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="808" y="73" width="125" height="27" rx="8"/><text class="zone-title" x="823" y="91">CONTAINER VIEW</text>
+
+          <path class="edge mount" style="marker-end:url(#files-amber)" d="M570 253 C675 253 718 180 825 180"/>
+          <path class="edge mount" style="marker-end:url(#files-amber)" d="M570 384 C680 384 716 364 825 364"/>
+          <path class="edge mount" style="marker-end:url(#files-amber)" d="M570 500 C680 500 716 507 825 507"/>
+          <path class="edge mount" style="marker-end:url(#files-amber)" d="M570 613 C680 613 716 623 825 623"/>
+          <path class="edge write" style="marker-end:url(#files-pink)" d="M1070 207 C1140 220 1140 310 1070 323"/>
+          <path class="edge write" style="marker-end:url(#files-pink)" d="M1070 414 C1140 430 1140 467 1070 483"/>
+
+          <g class="edge-label label-mount" transform="translate(657 156)"><rect width="79" height="22" rx="7"/><text x="39.5" y="15">RW /workspace</text></g>
+          <g class="edge-label label-mount" transform="translate(654 348)"><rect width="85" height="22" rx="7"/><text x="42.5" y="15">RW VOLUME</text></g>
+          <g class="edge-label label-mount" transform="translate(648 491)"><rect width="94" height="22" rx="7"/><text x="47" y="15">RW SOCKET</text></g>
+          <g class="edge-label label-mount" transform="translate(652 600)"><rect width="86" height="22" rx="7"/><text x="43" y="15">RO SECRETS</text></g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Current task checkout" data-tip="The HTML map is being created in this outer repository root. It is a Git checkout on main at bab7256. The runtime does not mount this root directly; it mounts its workspace child.">
+            <rect class="body" x="63" y="125" width="507" height="72" rx="14"/>
+            <rect class="icon-bg" x="80" y="144" width="34" height="34" rx="9"/><text class="icon" x="97" y="166">./</text>
+            <text class="title" x="130" y="155">Current task checkout</text>
+            <text class="meta mono" x="130" y="177">main · bab7256 · clean before this file</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Host workspace" data-tip="workspace/ is the host directory bind-mounted into the bot and deployer as /workspace. It contains durable state and the separate live self-repository.">
+            <rect class="body" x="95" y="220" width="475" height="66" rx="14"/>
+            <rect class="icon-bg" x="112" y="236" width="34" height="34" rx="9"/><text class="icon" x="129" y="258">WS</text>
+            <text class="title" x="162" y="248">workspace/</text>
+            <text class="meta" x="162" y="269">host → /workspace</text>
+          </g>
+
+          <g class="node pink" tabindex="0" data-tip-title="Host-persistent state" data-tip="Outside the nested Git checkout: usage.sqlite3, deployment.json, deployment.lock and deployer-heartbeat. An older traces.sqlite3 may exist here, but the active default trace path is now the dedicated volume.">
+            <rect class="body" x="127" y="314" width="443" height="103" rx="14"/>
+            <rect class="icon-bg" x="144" y="331" width="34" height="34" rx="9"/><text class="icon" x="161" y="353">DB</text>
+            <text class="title" x="194" y="347">.personal-agent-state/</text>
+            <text class="meta mono" x="144" y="385">usage.sqlite3 · deployment.json</text>
+            <text class="meta mono" x="144" y="402">deployment.lock · deployer-heartbeat</text>
+          </g>
+
+          <g class="node purple" tabindex="0" data-tip-title="Nested live repository" data-tip="workspace/personal-agent is its own .git repository, separately mounted to /workspace/personal-agent and configured as the self-repository. It is on main at bab7256 and aligned with origin/main.">
+            <rect class="body" x="127" y="445" width="443" height="111" rx="14"/>
+            <rect class="icon-bg" x="144" y="462" width="34" height="34" rx="9"/><text class="icon" x="161" y="484">G</text>
+            <text class="title" x="194" y="478">personal-agent/</text>
+            <text class="status" x="194" y="496">NESTED GIT · MAIN · bab7256</text>
+            <text class="meta mono" x="144" y="527">src/ · tests/ · docs/adr/ · skills/</text>
+            <text class="meta mono" x="144" y="544">Dockerfile* · docker-compose.yml</text>
+          </g>
+
+          <g class="node pink" tabindex="0" data-tip-title="Named trace volume" data-tip="Docker volume personal-agent_trace-state stores the active /trace-state/traces.sqlite3. It is shared only by bot and deployer and retained across container replacement.">
+            <rect class="body" x="63" y="585" width="507" height="74" rx="14"/>
+            <rect class="icon-bg" x="80" y="604" width="34" height="34" rx="9"/><text class="icon" x="97" y="626">V</text>
+            <text class="title" x="130" y="615">personal-agent_trace-state</text>
+            <text class="meta mono" x="130" y="637">/trace-state/traces.sqlite3 · 7d</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Workspace inside containers" data-tip="Both running services can read and write /workspace. The bot's default computer root is /workspace/personal-agent; /project narrows it to a descendant.">
+            <rect class="body" x="825" y="125" width="505" height="111" rx="15"/>
+            <rect class="icon-bg" x="842" y="142" width="34" height="34" rx="9"/><text class="icon" x="859" y="164">/</text>
+            <text class="title" x="892" y="158">/workspace</text>
+            <text class="status" x="892" y="176">BOT + DEPLOYER · READ / WRITE</text>
+            <text class="meta mono" x="842" y="208">personal-agent/ · .personal-agent-state/</text>
+          </g>
+
+          <g class="node purple" tabindex="0" data-tip-title="Application image filesystem" data-tip="Each image contains /app. Bot copies pyproject, README and src then installs the package. Deployer copies only deployment.py, deployer.py and owner_trace.py. Worker copies src.">
+            <rect class="body" x="857" y="272" width="473" height="77" rx="14"/>
+            <rect class="icon-bg" x="874" y="292" width="34" height="34" rx="9"/><text class="icon" x="891" y="314">APP</text>
+            <text class="title" x="924" y="303">/app</text>
+            <text class="meta" x="924" y="325">image layer · replaced on rebuild</text>
+          </g>
+
+          <g class="node pink" tabindex="0" data-tip-title="Trace store inside containers" data-tip="TRACE_DB_PATH defaults to /trace-state/traces.sqlite3. Bot writes turn events and exports; deployer appends deployment events.">
+            <rect class="body" x="825" y="377" width="505" height="74" rx="14"/>
+            <rect class="icon-bg" x="842" y="396" width="34" height="34" rx="9"/><text class="icon" x="859" y="418">TR</text>
+            <text class="title" x="892" y="407">/trace-state</text>
+            <text class="meta" x="892" y="429">bot + deployer · read / write</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Docker socket" data-tip="Both running services mount /var/run/docker.sock read/write. The bot uses it for legacy workers; the deployer uses it for builds, replacement, inspection and rollback.">
+            <rect class="body" x="825" y="470" width="505" height="74" rx="14"/>
+            <rect class="icon-bg" x="842" y="489" width="34" height="34" rx="9"/><text class="icon" x="859" y="511">DK</text>
+            <text class="title" x="892" y="500">/var/run/docker.sock</text>
+            <text class="meta" x="892" y="522">bot + deployer · host control boundary</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Read-only Git credentials" data-tip="Only the bot container receives /run/secrets/github_key and github_known_hosts as read-only bind mounts. Values are never shown here and must not enter Git or traces.">
+            <rect class="body" x="825" y="585" width="505" height="74" rx="14"/>
+            <rect class="icon-bg" x="842" y="604" width="34" height="34" rx="9"/><text class="icon" x="859" y="626">RO</text>
+            <text class="title" x="892" y="615">/run/secrets/*</text>
+            <text class="meta" x="892" y="637">bot only · key + known hosts · read only</text>
+          </g>
+        </svg>
+      </section>
+
+      <section class="view" id="deploy" aria-label="Self-deployment architecture">
+        <svg class="map" viewBox="0 0 1400 760" role="img" aria-labelledby="deploy-title deploy-desc">
+          <title id="deploy-title">Self-deployment flow</title>
+          <desc id="deploy-desc">A requested deployment is approved, tested, committed and pushed by the bot, then queued in durable state. The persistent deployer builds a new bot image, replaces the bot, verifies health, and either reports success or restores a rollback image.</desc>
+          <defs>
+            <marker id="deploy-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#78f0b0"/></marker>
+            <marker id="deploy-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#b4a2ff"/></marker>
+            <marker id="deploy-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ff737e"/></marker>
+            <marker id="deploy-pink" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f58db1"/></marker>
+            <marker id="deploy-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#67d7f7"/></marker>
+          </defs>
+
+          <rect class="zone" x="25" y="55" width="655" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="43" y="73" width="151" height="27" rx="8"/><text class="zone-title" x="58" y="91">BOT · PUBLISH PHASE</text>
+          <rect class="zone" x="710" y="55" width="665" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="728" y="73" width="181" height="27" rx="8"/><text class="zone-title" x="743" y="91">DEPLOYER · REPLACE PHASE</text>
+
+          <path class="edge control" style="marker-end:url(#deploy-green)" d="M200 230 L310 230"/>
+          <path class="edge publish" style="marker-end:url(#deploy-purple)" d="M475 230 L500 230"/>
+          <path class="edge write" style="marker-end:url(#deploy-pink)" d="M582 286 C560 355 512 383 478 423"/>
+          <path class="edge control" style="marker-end:url(#deploy-green)" d="M635 473 C720 473 735 230 805 230"/>
+          <path class="edge control" style="marker-end:url(#deploy-green)" d="M970 230 L1075 230"/>
+          <path class="edge control" style="marker-end:url(#deploy-green)" d="M1240 230 C1310 250 1302 395 1237 422"/>
+          <path class="edge control" style="marker-end:url(#deploy-green)" d="M1075 474 L970 474"/>
+          <path class="edge rollback" style="marker-end:url(#deploy-red)" d="M1155 526 C1155 625 955 625 955 526"/>
+          <path class="edge call" style="marker-end:url(#deploy-cyan)" d="M805 474 C712 474 700 565 635 565"/>
+
+          <g class="edge-label label-control" transform="translate(216 214)"><rect width="78" height="22" rx="7"/><text x="39" y="15">APPROVE</text></g>
+          <g class="edge-label label-control" transform="translate(481 196)"><rect width="85" height="22" rx="7"/><text x="42.5" y="15">TEST + PUSH</text></g>
+          <g class="edge-label label-write" transform="translate(510 345)"><rect width="75" height="22" rx="7"/><text x="37.5" y="15">ENQUEUE</text></g>
+          <g class="edge-label label-control" transform="translate(989 214)"><rect width="68" height="22" rx="7"/><text x="34" y="15">BUILD</text></g>
+          <g class="edge-label label-control" transform="translate(1263 320)"><rect width="69" height="22" rx="7"/><text x="34.5" y="15">REPLACE</text></g>
+          <g class="edge-label" transform="translate(1026 605)"><rect width="98" height="22" rx="7"/><text x="49" y="15">FAIL → ROLLBACK</text></g>
+
+          <g class="node cyan" tabindex="0" data-tip-title="1 · Explicit request" data-tip="The owner asks to deploy the configured self-repository. Ordinary code edits do not implicitly authorize deployment.">
+            <rect class="body" x="60" y="174" width="140" height="112" rx="16"/>
+            <rect class="icon-bg" x="77" y="192" width="34" height="34" rx="9"/><text class="icon" x="94" y="214">1</text>
+            <text class="title" x="77" y="250">Request</text>
+            <text class="meta" x="77" y="269">self deploy</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="2 · Exact approval" data-tip="Telegram approval covers the requested edits, tests, commit, push, rebuild and restart. It expires if unanswered.">
+            <rect class="body" x="310" y="174" width="165" height="112" rx="16"/>
+            <rect class="icon-bg" x="327" y="192" width="34" height="34" rx="9"/><text class="icon" x="344" y="214">2</text>
+            <text class="title" x="327" y="250">Approval</text>
+            <text class="meta" x="327" y="269">Telegram · exact action</text>
+          </g>
+
+          <g class="node purple" tabindex="0" data-tip-title="3 · Publish main" data-tip="Bot preflights main/origin, runs the full test suite, commits dirty tested changes, pushes origin/main, then verifies clean local HEAD equals origin/main.">
+            <rect class="body" x="500" y="174" width="165" height="112" rx="16"/>
+            <rect class="icon-bg" x="517" y="192" width="34" height="34" rx="9"/><text class="icon" x="534" y="214">3</text>
+            <text class="title" x="517" y="250">Publish main</text>
+            <text class="meta" x="517" y="269">test · commit · push</text>
+          </g>
+
+          <g class="node pink" tabindex="0" data-tip-title="4 · Durable queue" data-tip="The bot writes a single-flight deployment request under /workspace/.personal-agent-state. The request includes deployment ID, commit and originating trace turn ID.">
+            <rect class="body" x="315" y="423" width="320" height="101" rx="16"/>
+            <rect class="icon-bg" x="332" y="441" width="34" height="34" rx="9"/><text class="icon" x="349" y="463">4</text>
+            <text class="title" x="382" y="457">Durable queue</text>
+            <text class="meta mono" x="382" y="480">.personal-agent-state/</text>
+            <text class="meta" x="332" y="505">lock · request · manifest · heartbeat</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="5 · Deployer claims request" data-tip="The persistent deployer polls the durable queue and verifies that the nested self-checkout is clean and exactly at the queued commit.">
+            <rect class="body" x="805" y="174" width="165" height="112" rx="16"/>
+            <rect class="icon-bg" x="822" y="192" width="34" height="34" rx="9"/><text class="icon" x="839" y="214">5</text>
+            <text class="title" x="822" y="250">Claim queue</text>
+            <text class="meta" x="822" y="269">verify clean commit</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="6 · Preserve and build" data-tip="The deployer tags the previous bot image as personal-agent-bot:rollback-&lt;deployment-id&gt;, then runs Compose build for the bot service only.">
+            <rect class="body" x="1075" y="174" width="165" height="112" rx="16"/>
+            <rect class="icon-bg" x="1092" y="192" width="34" height="34" rx="9"/><text class="icon" x="1109" y="214">6</text>
+            <text class="title" x="1092" y="250">Build image</text>
+            <text class="meta" x="1092" y="269">tag rollback first</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="7 · Replace and verify" data-tip="Compose force-recreates only the bot. The deployer resolves its container ID, waits for running + healthy across the stability window, then records success.">
+            <rect class="body" x="1075" y="422" width="165" height="104" rx="16"/>
+            <rect class="icon-bg" x="1092" y="440" width="34" height="34" rx="9"/><text class="icon" x="1109" y="462">7</text>
+            <text class="title" x="1142" y="456">Replace bot</text>
+            <text class="meta" x="1092" y="493">restart · health window</text>
+            <text class="status" x="1092" y="511">HEALTHY → KEEP</text>
+          </g>
+
+          <g class="node red" tabindex="0" data-tip-title="Rollback path" data-tip="On recreate or readiness failure, the deployer retags the preserved image as latest, recreates the bot and performs a shorter readiness check.">
+            <rect class="body" x="805" y="422" width="165" height="104" rx="16"/>
+            <rect class="icon-bg" x="822" y="440" width="34" height="34" rx="9"/><text class="icon" x="839" y="462">↶</text>
+            <text class="title" x="872" y="456">Rollback</text>
+            <text class="meta" x="822" y="493">restore previous image</text>
+            <text class="status" x="822" y="511">FAILURE PATH</text>
+          </g>
+
+          <g class="node cyan" tabindex="0" data-tip-title="Last durable deployment record" data-tip="Deployment 935e0604e84b was recorded healthy and reported on 2026-07-27. The current live bot image is newer; this card is the latest durable deployment.json record, not a claim about its source commit.">
+            <rect class="body" x="315" y="557" width="320" height="91" rx="16"/>
+            <rect class="icon-bg" x="332" y="575" width="34" height="34" rx="9"/><text class="icon" x="349" y="597">✓</text>
+            <text class="title" x="382" y="591">Last durable record</text>
+            <text class="status" x="382" y="610">935e0604e84b · HEALTHY</text>
+            <text class="meta" x="332" y="632">verified + owner reported · 2026-07-27</text>
+          </g>
+        </svg>
+      </section>
+
+      <section class="view" id="images" aria-label="Docker images and deployments">
+        <svg class="map" viewBox="0 0 1400 760" role="img" aria-labelledby="images-title images-desc">
+          <title id="images-title">Docker images and their containers</title>
+          <desc id="images-desc">Three current local images map to a healthy bot, a running deployer and an exited Compose worker placeholder. Historical test and rollback tags are retained locally.</desc>
+          <defs>
+            <marker id="images-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#78f0b0"/></marker>
+            <marker id="images-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ff737e"/></marker>
+            <marker id="images-dim" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#405064"/></marker>
+          </defs>
+
+          <rect class="zone" x="25" y="55" width="950" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="43" y="73" width="147" height="27" rx="8"/><text class="zone-title" x="58" y="91">CURRENT IMAGE SET</text>
+          <rect class="zone" x="1005" y="55" width="370" height="650" rx="22"/>
+          <rect class="zone-title-bg" x="1023" y="73" width="122" height="27" rx="8"/><text class="zone-title" x="1038" y="91">LOCAL HISTORY</text>
+
+          <path class="edge control" style="marker-end:url(#images-green)" d="M280 350 L280 470"/>
+          <path class="edge control" style="marker-end:url(#images-green)" d="M585 350 L585 470"/>
+          <path class="edge dim" style="marker-end:url(#images-dim)" d="M890 350 L890 470"/>
+          <path class="edge rollback" style="marker-end:url(#images-red)" d="M1137 339 C1000 339 995 237 925 237"/>
+
+          <g class="node green" tabindex="0" data-tip-title="Bot image" data-tip="personal-agent-bot:latest · image ID 2de64d861a36 · 616 MB. Built from Dockerfile.bot; includes Docker CLI/Compose, Git, OpenSSH client and the installed Python package.">
+            <rect class="body" x="100" y="135" width="280" height="215" rx="20"/>
+            <rect x="115" y="119" width="250" height="16" rx="8" fill="#183026" stroke="#345e49"/>
+            <rect x="127" y="107" width="226" height="12" rx="6" fill="#14261f" stroke="#294a3b"/>
+            <rect class="icon-bg" x="123" y="158" width="42" height="42" rx="12"/><text class="icon" x="144" y="184">BOT</text>
+            <text class="title" x="182" y="178">personal-agent-bot</text>
+            <text class="status" x="182" y="197">LATEST</text>
+            <text class="meta mono" x="123" y="239">2de64d861a36</text>
+            <text class="meta" x="123" y="263">616 MB</text>
+            <text class="meta mono" x="123" y="287">Dockerfile.bot</text>
+            <text class="meta" x="123" y="318">Python + Git + Docker + SSH</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Deployer image" data-tip="personal-agent-deployer:latest · image ID d1b841694d40 · 547 MB. Built separately from Dockerfile.deployer and intentionally not replaced during normal bot self-deployment.">
+            <rect class="body" x="445" y="135" width="280" height="215" rx="20"/>
+            <rect x="460" y="119" width="250" height="16" rx="8" fill="#183026" stroke="#345e49"/>
+            <rect x="472" y="107" width="226" height="12" rx="6" fill="#14261f" stroke="#294a3b"/>
+            <rect class="icon-bg" x="468" y="158" width="42" height="42" rx="12"/><text class="icon" x="489" y="184">DEP</text>
+            <text class="title" x="527" y="178">personal-agent-deployer</text>
+            <text class="status" x="527" y="197">LATEST</text>
+            <text class="meta mono" x="468" y="239">d1b841694d40</text>
+            <text class="meta" x="468" y="263">547 MB</text>
+            <text class="meta mono" x="468" y="287">Dockerfile.deployer</text>
+            <text class="meta" x="468" y="318">Python + Git + Docker</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Worker image" data-tip="repository-worker:latest · image ID 3857c17fc909 · 219 MB. Built from Dockerfile; legacy /run creates an ephemeral container from this image with --rm.">
+            <rect class="body" x="790" y="135" width="160" height="215" rx="20"/>
+            <rect x="803" y="119" width="134" height="16" rx="8" fill="#302718" stroke="#5b4b2d"/>
+            <rect x="814" y="107" width="112" height="12" rx="6" fill="#261f16" stroke="#493c28"/>
+            <rect class="icon-bg" x="813" y="158" width="42" height="42" rx="12"/><text class="icon" x="834" y="184">W</text>
+            <text class="title" x="813" y="229">repository-</text>
+            <text class="title" x="813" y="248">worker</text>
+            <text class="status" x="813" y="269">LATEST</text>
+            <text class="meta mono" x="813" y="295">3857c17fc909</text>
+            <text class="meta" x="813" y="318">219 MB</text>
+            <text class="meta mono" x="813" y="337">Dockerfile</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Live bot container" data-tip="personal-agent-bot-1 is running and reports healthy. It uses personal-agent-bot:latest and is configured with a readiness file plus PID 1 liveness check.">
+            <rect class="body" x="130" y="470" width="300" height="126" rx="18"/>
+            <rect class="icon-bg" x="149" y="489" width="38" height="38" rx="11"/><text class="icon" x="168" y="513">C</text>
+            <text class="title" x="202" y="507">personal-agent-bot-1</text>
+            <text class="status" x="202" y="525">● RUNNING · HEALTHY</text>
+            <text class="meta" x="149" y="559">created ~1 hour before snapshot</text>
+            <text class="meta mono" x="149" y="579">python -m telegram_bot</text>
+          </g>
+
+          <g class="node green" tabindex="0" data-tip-title="Live deployer container" data-tip="personal-agent-deployer-1 is running with restart unless-stopped. It has no Docker healthcheck; its durable heartbeat is stored in .personal-agent-state.">
+            <rect class="body" x="475" y="470" width="300" height="126" rx="18"/>
+            <rect class="icon-bg" x="494" y="489" width="38" height="38" rx="11"/><text class="icon" x="513" y="513">C</text>
+            <text class="title" x="547" y="507">personal-agent-deployer-1</text>
+            <text class="status" x="547" y="525">● RUNNING · PERSISTENT</text>
+            <text class="meta" x="494" y="559">restart: unless-stopped</text>
+            <text class="meta mono" x="494" y="579">python -m deployer</text>
+          </g>
+
+          <g class="node amber idle" tabindex="0" data-tip-title="Compose worker placeholder" data-tip="personal-agent-worker-1 exited successfully because its Compose entrypoint is /bin/true. It establishes the image dependency; real legacy worker containers are launched separately with docker run --rm.">
+            <rect class="body" x="820" y="470" width="130" height="126" rx="18"/>
+            <rect class="icon-bg" x="839" y="489" width="38" height="38" rx="11"/><text class="icon" x="858" y="513">C</text>
+            <text class="title" x="839" y="553">worker-1</text>
+            <text class="status" x="839" y="572">○ EXITED (0)</text>
+          </g>
+
+          <g class="node red" tabindex="0" data-tip-title="Rollback tags" data-tip="Self-deployment preserves prior bot images as personal-agent-bot:rollback-&lt;deployment-id&gt;. Multiple dated and deployment-ID rollback tags remain locally for recovery and diagnosis.">
+            <rect class="body" x="1043" y="135" width="294" height="204" rx="20"/>
+            <rect x="1061" y="119" width="258" height="16" rx="8" fill="#301a20" stroke="#5b303b"/>
+            <rect x="1074" y="105" width="232" height="14" rx="7" fill="#26161a" stroke="#47262e"/>
+            <rect x="1087" y="93" width="206" height="12" rx="6" fill="#201317" stroke="#392027"/>
+            <rect class="icon-bg" x="1066" y="158" width="42" height="42" rx="12"/><text class="icon" x="1087" y="184">↶</text>
+            <text class="title" x="1125" y="178">Rollback tags</text>
+            <text class="status" x="1125" y="197">PRESERVED LOCALLY</text>
+            <text class="meta mono" x="1066" y="238">rollback-935e0604e84b</text>
+            <text class="meta mono" x="1066" y="260">rollback-9c484e6d67cf</text>
+            <text class="meta mono" x="1066" y="282">rollback-20260727…</text>
+            <text class="meta" x="1066" y="315">prior bot images · recovery</text>
+          </g>
+
+          <g class="node purple" tabindex="0" data-tip-title="Diagnostic image tags" data-tip="Local bot image variants include compatibility-test, usage-test, format-test and diagnose-* tags. They are not active services and may be removed manually when no longer useful.">
+            <rect class="body" x="1043" y="386" width="294" height="136" rx="18"/>
+            <rect class="icon-bg" x="1062" y="405" width="38" height="38" rx="11"/><text class="icon" x="1081" y="429">T</text>
+            <text class="title" x="1116" y="423">Test tags</text>
+            <text class="status" x="1116" y="441">INACTIVE</text>
+            <text class="meta mono" x="1062" y="476">compatibility · usage · format</text>
+            <text class="meta mono" x="1062" y="498">diagnose-fix · diagnose-14c…</text>
+          </g>
+
+          <g class="node amber" tabindex="0" data-tip-title="Shared base" data-tip="All three current images begin from python:3.12-slim, currently present locally as image ID 25c5b8011a34 at 119 MB.">
+            <rect class="body" x="1043" y="566" width="294" height="90" rx="16"/>
+            <rect class="icon-bg" x="1062" y="585" width="38" height="38" rx="11"/><text class="icon" x="1081" y="609">PY</text>
+            <text class="title" x="1116" y="603">python:3.12-slim</text>
+            <text class="meta mono" x="1116" y="624">25c5b8011a34 · 119 MB</text>
+          </g>
+        </svg>
+      </section>
+    </main>
+
+    <footer class="bar footer">
+      <div class="layers" aria-label="Connection layers">
+        <button class="layer" data-layer="call" aria-pressed="true">Calls</button>
+        <button class="layer" data-layer="write" aria-pressed="true">Writes</button>
+        <button class="layer" data-layer="mount" aria-pressed="true">Mounts</button>
+        <button class="layer" data-layer="control" aria-pressed="true">Control</button>
+      </div>
+      <div class="hint"><kbd>1–4</kbd><span>VIEWS</span><kbd>HOVER</kbd><span>DETAIL</span></div>
+    </footer>
+  </div>
+
+  <aside class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"><strong></strong><span></span></aside>
+
+  <script>
+    (() => {
+      const tabs = [...document.querySelectorAll('.tab')];
+      const views = [...document.querySelectorAll('.view')];
+      const layers = [...document.querySelectorAll('.layer')];
+      const tip = document.getElementById('tooltip');
+      const tipTitle = tip.querySelector('strong');
+      const tipBody = tip.querySelector('span');
+
+      function showView(id) {
+        tabs.forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.view === id)));
+        views.forEach(view => view.classList.toggle('active', view.id === id));
+      }
+
+      tabs.forEach(tab => tab.addEventListener('click', () => showView(tab.dataset.view)));
+
+      layers.forEach(button => button.addEventListener('click', () => {
+        const isOn = button.getAttribute('aria-pressed') === 'true';
+        button.setAttribute('aria-pressed', String(!isOn));
+        button.classList.toggle('off', isOn);
+        document.body.classList.toggle(`hide-${button.dataset.layer}`, isOn);
+      }));
+
+      function placeTip(event) {
+        const pad = 14;
+        const box = tip.getBoundingClientRect();
+        let x = event.clientX + 16;
+        let y = event.clientY + 16;
+        if (x + box.width > window.innerWidth - pad) x = event.clientX - box.width - 16;
+        if (y + box.height > window.innerHeight - pad) y = event.clientY - box.height - 16;
+        tip.style.left = `${Math.max(pad, x)}px`;
+        tip.style.top = `${Math.max(pad, y)}px`;
+      }
+
+      document.querySelectorAll('.node').forEach(node => {
+        const show = event => {
+          tipTitle.textContent = node.dataset.tipTitle;
+          tipBody.textContent = node.dataset.tip;
+          tip.classList.add('show');
+          tip.setAttribute('aria-hidden', 'false');
+          placeTip(event);
+        };
+        const hide = () => {
+          tip.classList.remove('show');
+          tip.setAttribute('aria-hidden', 'true');
+        };
+        node.addEventListener('pointerenter', show);
+        node.addEventListener('pointermove', placeTip);
+        node.addEventListener('pointerleave', hide);
+        node.addEventListener('focus', event => {
+          const box = node.getBoundingClientRect();
+          show({ clientX: box.right, clientY: box.top });
+        });
+        node.addEventListener('blur', hide);
+      });
+
+      document.addEventListener('keydown', event => {
+        const index = Number(event.key) - 1;
+        if (index >= 0 && index < tabs.length) showView(tabs[index].dataset.view);
+        if (event.key === 'Escape') tip.classList.remove('show');
+      });
+    })();
+  </script>
+</body>
+</html>
