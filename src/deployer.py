@@ -37,6 +37,8 @@ def run_once(queue: DeploymentQueue) -> bool:
                 bot_image=os.environ["BOT_IMAGE"],
                 repository=os.environ.get("SELF_REPOSITORY_PATH", "/workspace/personal-agent"),
                 state_dir=str(queue.state_dir),
+                remote_url=os.environ["DEPLOY_REMOTE_URL"],
+                remote_ref=os.environ.get("DEPLOY_REMOTE_REF", "refs/heads/main"),
                 trace=trace,
             )
             if trace is not None:

@@ -40,12 +40,6 @@ services:
       TRACE_RETENTION_DAYS: ${TRACE_RETENTION_DAYS:-7}
       TRACE_EXPORT_PART_BYTES: ${TRACE_EXPORT_PART_BYTES:-47185920}
       AGENT_WORKSPACE_ROOT: /workspace
-      SELF_REPOSITORY_PATH: /workspace/personal-agent
-      DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
-      DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
-      BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
-      DEPLOYMENT_STATE_DIR: /workspace/.personal-agent-state
-      HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
     volumes:
       - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
       - codex-state:/codex-home
@@ -58,6 +52,7 @@ services:
       start_period: 5s
 
   deployer:
+    profiles: ["manual-deployer"]
     build:
       context: .
       dockerfile: Dockerfile.deployer
@@ -67,8 +62,10 @@ services:
       DEPLOY_COMPOSE_FILE: /workspace/personal-agent/docker-compose.yml
       DEPLOY_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-personal-agent}
       BOT_IMAGE: ${BOT_IMAGE:-personal-agent-bot:latest}
-      DEPLOYMENT_STATE_DIR: /workspace/.personal-agent-state
+      DEPLOYMENT_STATE_DIR: /deployment-state
       SELF_REPOSITORY_PATH: /workspace/personal-agent
+      DEPLOY_REMOTE_URL: ${DEPLOY_REMOTE_URL:-https://github.com/julianlizarraga15/personal-agent.git}
+      DEPLOY_REMOTE_REF: ${DEPLOY_REMOTE_REF:-refs/heads/main}
       HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-./workspace}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?TELEGRAM_ALLOWED_USER_ID is required}
@@ -80,8 +77,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_WORKSPACE_DIR:-./workspace}:/workspace
+      - deployer-state:/deployment-state
       - trace-state:/trace-state
-    restart: unless-stopped
+    restart: "no"
 
   codex-login:
     profiles: ["management"]
@@ -97,4 +95,5 @@ services:
 
 volumes:
   codex-state:
+  deployer-state:
   trace-state:

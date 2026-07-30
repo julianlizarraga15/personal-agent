@@ -37,7 +37,7 @@ The image includes Git but expects the Codex CLI and its authentication to be su
 
 ## Telegram usage with Docker Compose
 
-The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. It does not need an OpenAI API key. The bot has a writable `workspace/` mount, but no Docker socket, SSH key, or Git push credential.
+The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. It does not need an OpenAI API key. The bot has a writable `workspace/` mount, but no Docker socket, SSH key, Git push credential, or deployment queue.
 
 Create `.env`, build the image, and perform the one-time device login. The `codex-state` volume preserves authentication and Codex configuration across container replacement.
 
@@ -46,7 +46,7 @@ cp .env.example .env
 # edit the Telegram token and numeric owner ID
 docker compose build bot
 docker compose run --rm codex-login
-docker compose up -d bot deployer
+docker compose up -d bot
 ```
 
 Open the printed verification URL, enter its code, and wait for the command to report success. Never copy `auth.json` into an image or repository.
@@ -72,7 +72,7 @@ Agent replies use the existing safe Telegram Markdown renderer. A single debounc
 
 ### Dormant Responses rollback
 
-The previous Responses implementation remains in the source but is not registered in Codex mode. To roll back manually, set `AGENT_BACKEND=responses`, add `OPENAI_API_KEY` to the bot through a private local Compose override, rebuild, and restart the bot. That mode restores media, routing, approval, usage, trace, `/run`, and self-deployment commands; it also requires restoring any Docker/Git mounts needed for those legacy operations. Do not commit the override or credentials.
+The previous Responses implementation remains in the source but is not registered in Codex mode. To roll back manually, set `AGENT_BACKEND=responses`, add `OPENAI_API_KEY` to the bot through a private local Compose override, rebuild, and restart the bot. That mode restores media, routing, approval, usage, trace, and `/run`; self-deployment is intentionally disconnected from Docker authority. Do not commit the override or credentials.
 
 You can also send one Telegram photo or JPEG, PNG, WEBP, or non-animated GIF document, with an optional caption explaining what to inspect or change. Images are validated, limited to 10 MiB by default (`TELEGRAM_MAX_IMAGE_BYTES`), and sent to the model at high detail. The image is available only during that turn; resend it for follow-up visual questions. Albums, stickers, animation, video, PDFs, and image generation are not supported.
 
@@ -94,8 +94,8 @@ Compatible main models are asked for an automatic reasoning summary; a provider 
 
 The bot writes content-free operational logs to stdout. Follow them in real time with `docker compose logs -f bot`; each turn includes a correlation ID and records only stage metadata such as routing, model requests, token/cache/search usage, tool start/finish, approvals, self-deployment stages, failures, and elapsed time. Logs intentionally exclude message text, prompts, file contents, command output, and credentials; detailed owner data is available only through the protected trace database and authenticated Telegram exports. Set `LOG_LEVEL=DEBUG` for additional library diagnostics or leave the default at `INFO`.
 
-To let the agent update this bot, keep a checkout at `workspace/personal-agent` on `main` and run the dedicated `deployer` service. The agent tests and publishes the exact commit, then queues it for the deployer, which survives bot replacement and can roll back failed startup. Set `HOST_WORKSPACE_DIR`, `GIT_SSH_KEY_PATH`, and `GIT_KNOWN_HOSTS_PATH` to absolute host paths. A clean commit can be redeployed after an interrupted attempt; a bot restart still loses in-memory conversations and approvals.
+The optional deployer is reserved for host-managed recovery. It is disabled by default behind the `manual-deployer` profile, does not restart automatically, and consumes a private queue volume that the bot cannot access. It also requires the queued commit to equal the configured HTTPS remote branch before building.
 
-Use `/pending` for active approvals, queued builds, startup verification, and rollback state. Deployment state is persisted outside Git at `/workspace/.personal-agent-state`; the restarted bot reports completion only after the deployer verifies stability. Stop it with `docker compose down`. Mounting `/var/run/docker.sock` gives these services host-level Docker authority; keep the deployment on a trusted machine.
+Mounting `/var/run/docker.sock` gives the optional deployer host-level authority. Start it only with `docker compose --profile manual-deployer up -d deployer` when a trusted host workflow explicitly needs it, and stop it afterward. The default bot deployment does not start or depend on it.
 
 The reusable worker API is available as `worker.execute_workflow(task, repo, on_status=...)`; the module CLI remains available inside the worker image.

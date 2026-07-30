@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
+from urllib.parse import urlsplit
 
 from owner_trace import TraceRecorder
 
@@ -157,6 +158,8 @@ def run_deployment(
     bot_image: str,
     repository: str = "/workspace/personal-agent",
     state_dir: str = "/workspace/.personal-agent-state",
+    remote_url: str,
+    remote_ref: str = "refs/heads/main",
     docker_compose: str = "docker-compose",
     docker: str = "docker",
     readiness_timeout: int = 60,
@@ -170,6 +173,11 @@ def run_deployment(
         raise RuntimeError("refusing an unexpected Compose file")
     if not bot_image.startswith("personal-agent-bot:"):
         raise RuntimeError("refusing an unexpected bot image")
+    parsed_remote = urlsplit(remote_url)
+    if parsed_remote.scheme != "https" or not parsed_remote.hostname or parsed_remote.username or parsed_remote.password:
+        raise RuntimeError("deployment remote must be an authenticated HTTPS origin")
+    if not remote_ref.startswith("refs/heads/") or not remote_ref.removeprefix("refs/heads/").replace("-", "").replace("_", "").replace("/", "").isalnum():
+        raise RuntimeError("refusing an invalid deployment remote ref")
     manifest = DeploymentManifest(state_dir)
     def execute(stage: str, command: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
         if trace is not None:
@@ -181,6 +189,12 @@ def run_deployment(
         return result
 
     commit = str(request["commit"])
+    remote = execute("verify published commit", ["git", "ls-remote", "--exit-code", remote_url, remote_ref], 60)
+    remote_lines = [line.split() for line in remote.stdout.splitlines() if line.strip()]
+    if remote.returncode or len(remote_lines) != 1 or len(remote_lines[0]) != 2 or remote_lines[0][1] != remote_ref:
+        return manifest.transition("failed", error="could not verify the configured published deployment ref")
+    if remote_lines[0][0] != commit:
+        return manifest.transition("failed", error="queued commit does not match the configured published deployment ref")
     head = execute("verify head", ["git", "-C", repository, "rev-parse", "HEAD"], 30)
     dirty = execute("verify clean", ["git", "-C", repository, "status", "--porcelain"], 30)
     if head.returncode or head.stdout.strip() != commit or dirty.returncode or dirty.stdout.strip():

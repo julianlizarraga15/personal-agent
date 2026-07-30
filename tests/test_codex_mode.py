@@ -54,6 +54,14 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("github_key", bot)
         self.assertNotIn("GIT_SSH_COMMAND", bot)
         self.assertNotIn("OPENAI_API_KEY", bot)
+        self.assertNotIn("DEPLOYMENT_STATE_DIR", bot)
+
+        deployer = compose.split("  deployer:", 1)[1].split("  codex-login:", 1)[0]
+        self.assertIn('profiles: ["manual-deployer"]', deployer)
+        self.assertIn("deployer-state:/deployment-state", deployer)
+        self.assertIn("DEPLOYMENT_STATE_DIR: /deployment-state", deployer)
+        self.assertIn("DEPLOY_REMOTE_URL:", deployer)
+        self.assertNotIn("/workspace/.personal-agent-state", deployer)
 
 
 if __name__ == "__main__":

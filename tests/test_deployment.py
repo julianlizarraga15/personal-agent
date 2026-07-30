@@ -72,7 +72,8 @@ class DeploymentStateTests(unittest.TestCase):
 
 class FakeRunner:
     def __init__(self, *, previous: bool = True, fail_new_bot: bool = False,
-                 fail_build: bool = False, fail_first_up: bool = False, fail_rollback: bool = False) -> None:
+                 fail_build: bool = False, fail_first_up: bool = False, fail_rollback: bool = False,
+                 remote_commit: str = "abc123") -> None:
         self.previous = previous
         self.fail_new_bot = fail_new_bot
         self.fail_build = fail_build
@@ -81,9 +82,12 @@ class FakeRunner:
         self.rollback_started = False
         self.up_count = 0
         self.commands: list[list[str]] = []
+        self.remote_commit = remote_commit
 
     def __call__(self, command, **kwargs):
         self.commands.append(command)
+        if command[:3] == ["git", "ls-remote", "--exit-code"]:
+            return subprocess.CompletedProcess(command, 0, f"{self.remote_commit}\trefs/heads/main\n", "")
         if command[:4] == ["git", "-C", "/workspace/personal-agent", "rev-parse"]:
             return subprocess.CompletedProcess(command, 0, "abc123\n", "")
         if command[:4] == ["git", "-C", "/workspace/personal-agent", "status"]:
@@ -109,6 +113,8 @@ class FakeRunner:
 
 
 class DeploymentRunnerTests(unittest.TestCase):
+    REMOTE = "https://github.com/example/personal-agent.git"
+
     def _request(self) -> dict:
         return {"deployment_id": "deploy1", "commit": "abc123", "requested_at": "now"}
 
@@ -119,6 +125,7 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, readiness_timeout=3, stability_seconds=2,
                 runner=runner, sleeper=lambda _: None,
             )
@@ -132,6 +139,7 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, readiness_timeout=3, stability_seconds=2,
                 runner=runner, sleeper=lambda _: None,
             )
@@ -145,6 +153,7 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, readiness_timeout=1, stability_seconds=1,
                 runner=runner, sleeper=lambda _: None,
             )
@@ -159,6 +168,7 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 request, compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, runner=runner, sleeper=lambda _: None,
             )
         self.assertEqual(result["status"], "failed")
@@ -171,6 +181,7 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, runner=runner, sleeper=lambda _: None,
             )
         self.assertEqual(result["status"], "failed")
@@ -183,6 +194,7 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, readiness_timeout=3, stability_seconds=1,
                 runner=runner, sleeper=lambda _: None,
             )
@@ -196,10 +208,33 @@ class DeploymentRunnerTests(unittest.TestCase):
             result = run_deployment(
                 self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
                 project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                remote_url=self.REMOTE,
                 state_dir=directory, readiness_timeout=1, stability_seconds=1,
                 runner=runner, sleeper=lambda _: None,
             )
         self.assertEqual(result["status"], "rollback_failed")
+
+    def test_unpublished_local_commit_fails_before_checkout_or_build(self) -> None:
+        runner = FakeRunner(remote_commit="published")
+        with tempfile.TemporaryDirectory() as directory:
+            DeploymentManifest(directory).write(**self._request(), status="queued")
+            result = run_deployment(
+                self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
+                project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                state_dir=directory, remote_url=self.REMOTE, runner=runner, sleeper=lambda _: None,
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("published deployment ref", result["error"])
+        self.assertFalse(any("rev-parse" in command for command in runner.commands))
+        self.assertFalse(any("build" in command for command in runner.commands))
+
+    def test_deployment_remote_must_be_https(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(RuntimeError, "HTTPS"):
+            run_deployment(
+                self._request(), compose_file="/workspace/personal-agent/docker-compose.yml",
+                project_name="personal-agent", bot_image="personal-agent-bot:latest",
+                state_dir=directory, remote_url="file:///workspace/fake-origin",
+            )
 
 
 class DeployerRecoveryTests(unittest.TestCase):
@@ -209,6 +244,8 @@ class DeployerRecoveryTests(unittest.TestCase):
             "DEPLOY_PROJECT_NAME": "personal-agent",
             "BOT_IMAGE": "personal-agent-bot:latest",
             "SELF_REPOSITORY_PATH": "/workspace/personal-agent",
+            "DEPLOY_REMOTE_URL": "https://github.com/example/personal-agent.git",
+            "DEPLOY_REMOTE_REF": "refs/heads/main",
         }
 
     def test_controller_restart_resumes_claimed_request(self) -> None:

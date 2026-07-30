@@ -6,7 +6,8 @@ This project runs an agent that can modify and push code, so deployment security
 
 - The default Codex backend starts ephemeral threads with workspace-write sandboxing and deny-all approvals. It may edit only the selected mounted workspace; attempted escalation fails without prompting in Telegram.
 - The bot has no Docker socket, SSH private key, Git push credential, or OpenAI API key. `CODEX_HOME` is a private Docker volume containing ChatGPT authentication and Codex configuration and must never be baked into an image or committed.
-- Shell networking, Docker access, writes outside the selected workspace, and credential-backed Git publication are outside the pass-1 bot boundary. The separate deployer is the only service with Docker authority, and deployment is host-initiated.
+- Shell networking, Docker access, writes outside the selected workspace, and credential-backed Git publication are outside the pass-1 bot boundary. The optional deployer is the only service with Docker authority, is disabled by default behind a manual profile, and deployment is host-initiated.
+- Deployment requests and status live in the deployer-only `deployer-state` volume. The bot cannot mount or enqueue into it. A deployer request is rejected unless its commit matches both a clean local checkout and the configured HTTPS remote branch, preventing a locally forged commit from reaching Docker build authority.
 - Codex-mode sessions and Telegram-to-thread mappings are memory-only. Restarting discards conversations while retaining authentication in `CODEX_HOME`.
 - Images, audio, legacy approvals, usage/trace exports, `/run`, and self-deployment commands are not registered in Codex mode. The controls below describe dormant `AGENT_BACKEND=responses` rollback behavior where applicable.
 - Worker tasks run in short-lived Docker containers with a temporary checkout. The checkout is removed when the worker exits.
@@ -24,14 +25,14 @@ This project runs an agent that can modify and push code, so deployment security
 - Operational logs are written to container stdout and intentionally exclude prompts, message text, file contents, command output, and credentials. Token counts, cache activity, web-search counts, and estimated cost are safe operational metadata. The durable usage database contains only timestamps, numeric Telegram user IDs, model/phase names, and those counts. A separate trace database contains owner-visible prompts and execution data after recursive redaction. The trace database defaults to the dedicated persistent `trace-state` Docker volume, is mounted only into bot/deployer, and uses owner-only database permissions; this avoids permissive mode emulation on Windows-backed workspace mounts. Restrict access to Docker logs, the usage state directory, and Docker volumes because trace content can include private source code, conversations, paths, project names, and numeric Telegram user IDs.
 - `/prompt`, `/trace`, and `/traces` use the same numeric owner authorization as all other bot input. A requested trace ID is additionally scoped to that owner. Visibility does not bypass project boundaries, approval, destructive-command, publication, or deployment controls.
 - Trace redaction replaces secret-shaped fields, authorization headers, recognized API/Telegram token patterns, private keys, and `.env` content. Raw image/audio bytes are represented only by media type, byte length, and SHA-256. Redaction is defense in depth, not a reason to submit credentials in chat or source files.
-- Self-deployment writes only deployment ID, commit, image references, timestamps, and machine-readable status to `/workspace/.personal-agent-state`; an automatically released file lock prevents concurrent deployments. A dedicated deployer retains Docker-socket authority across bot replacement.
+- The dormant self-deployment producer may still write historical state under the workspace, but the deployer does not mount or consume that path. Its private queue uses an automatically released file lock to prevent concurrent deployments.
 - Never inspect, read, print, or expose the contents of `.env` under any circumstances. Use `.env.example` for configuration guidance.
 - Test commands are detected from repository metadata and run inside the worker container.
 
 ## Deployment requirements
 
 - Run the bot only on a trusted host. The bot does not mount `/var/run/docker.sock`; the deployer does and therefore has effective control of the host Docker daemon.
-- The deployer allows only the configured Compose file and `personal-agent-bot:*` image family. It has Docker-socket authority and must be treated as a host-control boundary; update its separate image explicitly from the host.
+- The deployer allows only the configured Compose file and `personal-agent-bot:*` image family. It has Docker-socket authority and must be treated as a host-control boundary; start its manual profile only when needed and stop it afterward.
 - Use a dedicated Git identity/token with the minimum repository permissions needed to create branches and push them.
 - Do not mount the host filesystem, SSH agent, cloud credentials, or personal home directory into the bot or worker containers. The only intended host mount is the dedicated project `workspace/` directory.
 - Pin or regularly review base images and Python dependencies before production use.

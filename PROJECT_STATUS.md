@@ -8,7 +8,8 @@ Last updated: 2026-07-30
 - Authorized users receive ephemeral, memory-only Codex threads with the selected directory as `cwd`, workspace-write sandboxing, deny-all approvals, and no application model/personality/instruction overrides.
 - Codex mode is text-only and registers `/project`, `/new`, `/stop`, and `/help`. It debounces one coarse activity message and renders the completed agent message through the existing Markdown renderer.
 - `/new` resets to the workspace root, `/project` validates beneath it and starts fresh, and `/stop` interrupts and discards an active session. Restart loses conversations but preserves ChatGPT authentication in the private `codex-state` volume.
-- The bot service no longer receives the Docker socket, Git SSH key, Git SSH command, or OpenAI API key. The deployer alone retains Docker authority; pass-1 deployment is manual.
+- The bot service no longer receives the Docker socket, Git SSH key, Git SSH command, OpenAI API key, or deployment queue. Pass-1 deployment is manual.
+- The optional deployer is disabled by default, has no restart policy, and stores control state in a deployer-only volume. It rejects any commit that does not equal the configured published HTTPS remote ref and a clean local `HEAD`.
 - A `codex-login` management service performs one-time ChatGPT device-code login into `CODEX_HOME` without baking authentication into the image.
 - `AGENT_BACKEND=responses` retains the previous implementation as dormant rollback code. Its legacy Telegram commands and media handlers are not registered in Codex mode.
 
@@ -41,7 +42,7 @@ Last updated: 2026-07-30
 
 ## Next steps
 
-- Build the bot image, run `docker compose run --rm codex-login`, then manually start the bot from the trusted host.
+- Manually build and start the bot from a trusted, clean checkout aligned with `origin/main`; do not start the deployer for ordinary operation.
 - Verify authentication survives restart and that restart begins a fresh conversation.
 - Exercise normal chat, repository read/edit/test work, `/new`, `/stop`, `/project`, progress editing, and formatted final responses.
 - Attempt outside-workspace writing, shell networking, Docker access, and Git push; verify each fails without an approval prompt.
@@ -79,7 +80,7 @@ Last updated: 2026-07-30
 
 ## Validation
 
-- Current validation: all 152 tests pass via `python -m pytest`; `git diff --check` and `docker compose config --quiet` pass; the bot image builds successfully with pinned SDK/runtime `0.144.4`.
+- Current validation: all 154 tests pass via `python -m pytest`; `git diff --check`, default Compose rendering, and manual-deployer Compose rendering pass. Coverage includes deployer-only state mounts and rejection of unpublished local commits before checkout inspection or build.
 - The built image imports the SDK, backend, and Telegram modules, contains neither the Docker nor SSH client executable, and successfully starts and stops the bundled Codex app-server with an existing temporary `CODEX_HOME` mount.
 - Live device login, ChatGPT turns, Telegram exchanges, authentication restart persistence, and outside-workspace/network/Docker/Git-push denial checks remain manual and have not been run. Nothing was published or restarted.
 - Both the bot and deployer images build successfully with the tracing changes, their Python modules import inside the built images, and the recreated services report healthy/running after deployment.

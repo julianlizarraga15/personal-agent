@@ -10,7 +10,7 @@
    docker compose run --rm codex-login
    ```
 
-3. Start the services with `docker compose up -d bot deployer`.
+3. Start the bot with `docker compose up -d bot`. The Docker-privileged deployer is disabled by default.
 4. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text. Pass 1 is text-only; `/run` and deployment commands are unavailable.
 
 ## Health checks
@@ -43,9 +43,13 @@ Stop services with `docker compose down`. Failed tasks should not publish a bran
 
 ## Manual deployment and Responses rollback
 
-Build and restart from the trusted host; the Telegram bot must not publish, rebuild, or restart itself. For emergency rollback, set `AGENT_BACKEND=responses`, inject `OPENAI_API_KEY` and any legacy privileged mounts through a private local Compose override, then rebuild and recreate the bot. Never commit that override.
+Before building on the trusted host, fetch `origin/main`, require local `HEAD` to match it, and require a clean worktree. Then build and restart the bot; the Telegram process must not publish, rebuild, or restart itself. For emergency Responses rollback, set `AGENT_BACKEND=responses` and inject `OPENAI_API_KEY` through a private local Compose override. Never reconnect the bot to the Docker socket or deployer queue.
 
-## Dormant self-deployment recovery
+## Optional deployer recovery
+
+The deployer uses a private `deployer-state` volume, verifies the requested commit against `DEPLOY_REMOTE_URL` and `DEPLOY_REMOTE_REF`, and is behind the `manual-deployer` profile with no restart policy. Start it only for a trusted recovery procedure and stop it afterward.
+
+## Historical self-deployment recovery
 
 When the agent is asked to modify itself, keep the checkout on `main`. One approval covers tests, direct publication, queueing, rebuild, and restart. The persistent deployer tags the current image, rebuilds only the bot, verifies Docker health for a stability window, and rolls back automatically when startup fails. `/pending` reads the durable manifest even when conversational state has been lost.
 
