@@ -1,12 +1,14 @@
+import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from telegram.ext import CommandHandler, MessageHandler, MessageReactionHandler
+from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, MessageReactionHandler
 
 import telegram_bot
+from codex_backend import NetworkApprovalRequest
 
 
 class CodexModeTests(unittest.IsolatedAsyncioTestCase):
@@ -17,6 +19,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         handlers = [handler for group in application.handlers.values() for handler in group]
         command_callbacks = {handler.callback for handler in handlers if isinstance(handler, CommandHandler)}
         message_callbacks = {handler.callback for handler in handlers if isinstance(handler, MessageHandler)}
+        callback_callbacks = {handler.callback for handler in handlers if isinstance(handler, CallbackQueryHandler)}
 
         self.assertEqual(
             command_callbacks,
@@ -32,6 +35,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
             {telegram_bot.codex_media_message, telegram_bot.codex_conversational_message},
         )
         self.assertFalse(any(isinstance(handler, MessageReactionHandler) for handler in handlers))
+        self.assertEqual(callback_callbacks, {telegram_bot.codex_network_approval})
 
     def test_invalid_backend_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "AGENT_BACKEND"):
@@ -55,6 +59,10 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("GIT_SSH_COMMAND", bot)
         self.assertNotIn("OPENAI_API_KEY", bot)
         self.assertNotIn("DEPLOYMENT_STATE_DIR", bot)
+        self.assertIn("seccomp=./security/codex-bwrap-seccomp.json", bot)
+        self.assertNotIn("cap_add", bot)
+        self.assertNotIn("privileged:", bot)
+        self.assertNotIn("unconfined", bot)
 
         deployer = compose.split("  deployer:", 1)[1].split("  codex-login:", 1)[0]
         self.assertIn('profiles: ["manual-deployer"]', deployer)
@@ -62,6 +70,30 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("DEPLOYMENT_STATE_DIR: /deployment-state", deployer)
         self.assertIn("DEPLOY_REMOTE_URL:", deployer)
         self.assertNotIn("/workspace/.personal-agent-state", deployer)
+
+    async def test_network_approval_is_owner_bound_and_one_shot(self):
+        prompt_message = SimpleNamespace(edit_text=AsyncMock())
+        source_message = SimpleNamespace(reply_text=AsyncMock(return_value=prompt_message))
+        broker = telegram_bot.CodexApprovalBroker()
+        request = NetworkApprovalRequest(
+            method="item/commandExecution/requestApproval",
+            thread_id="thread-1",
+            turn_id="turn-1",
+            host="pypi.org",
+            protocol="https",
+            port=443,
+            reason="Install declared dependencies.",
+            cwd="/workspace/project",
+        )
+
+        task = asyncio.create_task(broker.request(source_message, 42, request))
+        await asyncio.sleep(0)
+        token = next(iter(broker.pending))
+        self.assertFalse(broker.resolve(token, 7, True))
+        self.assertTrue(broker.resolve(token, 42, True))
+        self.assertTrue(await task)
+        self.assertFalse(broker.resolve(token, 42, True))
+        self.assertIn("https://pypi.org:443", source_message.reply_text.await_args.args[0])
 
 
 if __name__ == "__main__":

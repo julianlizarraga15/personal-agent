@@ -11,6 +11,8 @@ services:
       context: .
       dockerfile: Dockerfile.bot
     image: ${BOT_IMAGE:-personal-agent-bot:latest}
+    security_opt:
+      - seccomp=./security/codex-bwrap-seccomp.json
     environment:
       AGENT_BACKEND: ${AGENT_BACKEND:-codex}
       CODEX_HOME: /codex-home

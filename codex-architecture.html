@@ -409,7 +409,7 @@
       <section class="section" aria-labelledby="normal-turn">
         <div class="section-head">
           <div><div class="kicker">01 · Normal operation</div><h2 id="normal-turn">One message, one direct path</h2></div>
-          <p class="section-note">There is no router, model ladder, approval service, media pipeline, or Docker control in the default conversation path.</p>
+          <p class="section-note">There is no router, model ladder, media pipeline, or Docker control. One small approval broker handles exact HTTPS destinations only.</p>
         </div>
 
         <div class="flow">
@@ -429,6 +429,7 @@
               <div><span>Telegram handler</span><code>TEXT ONLY</code></div>
               <div><span>Official Python SDK</span><code>0.144.4</code></div>
               <div><span>Codex app-server</span><code>SAME CONTAINER</code></div>
+              <div><span>Bubblewrap + uv</span><code>SANDBOXED</code></div>
             </div>
           </article>
 
@@ -457,7 +458,7 @@
           <article class="resource" data-mark="A">
             <span class="tag">Private volume</span>
             <h3><code>/codex-home</code></h3>
-            <p>ChatGPT authentication and Codex configuration. Login survives container replacement; it is never baked into the image.</p>
+            <p>ChatGPT authentication and Codex configuration. Login survives container replacement; sandboxed project commands cannot read it.</p>
           </article>
           <article class="resource" data-mark="T">
             <span class="tag purple">Private volume</span>
@@ -470,7 +471,7 @@
       <section class="section" aria-labelledby="boundary">
         <div class="section-head">
           <div><div class="kicker">03 · Security boundary</div><h2 id="boundary">Workspace power, not host power</h2></div>
-          <p class="section-note">Every thread starts with workspace-write sandboxing and approvals denied. Escalation fails instead of appearing in Telegram.</p>
+          <p class="section-note">A named workspace profile blocks network and sensitive mounts. Only one exact public HTTPS destination can be allowed for the current turn.</p>
         </div>
 
         <div class="split">
@@ -480,6 +481,8 @@
             <ul>
               <li>Read and modify workspace files</li>
               <li>Run local commands and project tests</li>
+              <li>Use <code>uv</code> to create and manage Python projects</li>
+              <li>Request one exact HTTPS destination with owner buttons</li>
               <li>Continue a thread across Telegram messages</li>
               <li>Report progress and return formatted answers</li>
             </ul>
@@ -492,7 +495,8 @@
               <li>No SSH key or Git push credential</li>
               <li>No OpenAI API key</li>
               <li>No writes outside the workspace sandbox</li>
-              <li>No shell networking or approval escalation</li>
+              <li>No private/local or unapproved shell networking</li>
+              <li>No reads of Codex auth, trace state, or <code>.env</code></li>
             </ul>
           </article>
         </div>
@@ -530,7 +534,7 @@
 
     <footer>
       <span>Personal Agent · Codex architecture</span>
-      <span>Ephemeral threads · Persistent authentication · Manual deployment</span>
+      <span>Ephemeral threads · Scoped HTTPS approval · Manual deployment</span>
     </footer>
   </div>
 </body>

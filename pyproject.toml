@@ -12,10 +12,13 @@ dependencies = ["Markdown>=3.8,<4", "openai>=2.48,<3", "openai-codex==0.144.4", 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
 
+[project.scripts]
+codex-safe-launcher = "codex_runtime:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["agent", "codex_backend", "codex_login", "router", "owner_trace", "usage", "worker", "telegram_bot", "deployment", "deployer", "self_deployment"]
+py-modules = ["agent", "codex_backend", "codex_login", "codex_runtime", "router", "owner_trace", "usage", "worker", "telegram_bot", "deployment", "deployer", "self_deployment"]

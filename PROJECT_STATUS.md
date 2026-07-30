@@ -5,7 +5,10 @@ Last updated: 2026-07-30
 ## Current state
 
 - Pass 1 defaults Telegram conversation to pinned `openai-codex==0.144.4` through one application-scoped `AsyncCodex` instance.
-- Authorized users receive ephemeral, memory-only Codex threads with the selected directory as `cwd`, workspace-write sandboxing, deny-all approvals, and no application model/personality/instruction overrides.
+- Authorized users receive ephemeral, memory-only Codex threads with the selected directory as `cwd`, a named permissions profile extending `:workspace`, and no application model/personality/instruction overrides.
+- System Bubblewrap now runs under a narrow Moby-derived seccomp profile, fixing the Docker namespace failure without added capabilities, privileged mode, or unconfined security settings. The image also includes pinned `uv`.
+- A sanitized launcher prevents Codex from inheriting bot/API/Git/proxy secrets. Sandboxed commands cannot read `/codex-home`, `/trace-state`, or workspace `.env` files.
+- Network is denied by default. Exact public HTTPS port-443 requests can be allowed once by the configured Telegram owner; requests expire after five minutes and are cancelled by `/new`, `/project`, and `/stop`. All other escalation fails closed.
 - Codex mode is text-only and registers `/project`, `/new`, `/stop`, and `/help`. It debounces one coarse activity message and renders the completed agent message through the existing Markdown renderer.
 - `/new` resets to the workspace root, `/project` validates beneath it and starts fresh, and `/stop` interrupts and discards an active session. Restart loses conversations but preserves ChatGPT authentication in the private `codex-state` volume.
 - The bot service no longer receives the Docker socket, Git SSH key, Git SSH command, OpenAI API key, or deployment queue. Pass-1 deployment is manual.
@@ -38,14 +41,15 @@ Last updated: 2026-07-30
 
 ## Last stopping point
 
-- The Codex SDK pass-1 implementation and automated tests are complete locally. It has not been committed, published, rebuilt, restarted, or manually exercised against ChatGPT/Telegram.
+- The Bubblewrap runtime fix and scoped Telegram network approvals are implemented locally. The full Python suite passes and the bot image builds. The Moby-derived profile was exercised directly: workspace writes succeed while bot-secret inheritance, auth/trace reads, outside-workspace writes, direct network access, and Docker access fail.
 
 ## Next steps
 
-- Manually build and start the bot from a trusted, clean checkout aligned with `origin/main`; do not start the deployer for ordinary operation.
+- Publish and deploy the validated bot from a trusted, clean checkout; do not start the deployer for ordinary operation.
 - Verify authentication survives restart and that restart begins a fresh conversation.
 - Exercise normal chat, repository read/edit/test work, `/new`, `/stop`, `/project`, progress editing, and formatted final responses.
-- Attempt outside-workspace writing, shell networking, Docker access, and Git push; verify each fails without an approval prompt.
+- Exercise a dependency install through Telegram: reject once, approve the exact public HTTPS destination once, and confirm a later turn asks again.
+- Confirm outside-workspace writing, auth/trace reads, Docker access, and credential-backed Git push remain denied and cannot produce an approval button.
 - Keep `AGENT_BACKEND=responses` rollback dormant until pass 1 has been validated live; remove it only in pass 2.
 
 ### Historical Responses follow-ups
@@ -65,7 +69,7 @@ Last updated: 2026-07-30
 - Do not expose secrets or weaken the isolation boundary.
 - Text-only support, plain Codex behavior, ephemeral conversations, coarse progress, and manual deployment are intentional for pass 1.
 - Codex uses the signed-in ChatGPT subscription and included limits, not API billing. `CODEX_HOME` persists only its authentication and configuration.
-- Codex may edit the selected workspace automatically. Deny-all approvals mean escalation attempts fail rather than prompting the Telegram owner.
+- Codex may edit the selected workspace automatically. Only exact public HTTPS port-443 network access can prompt the Telegram owner; all other escalation is denied.
 - The statements below describe the dormant Responses implementation rather than the default backend.
 - The OpenAI model is hosted remotely and is called through `OPENAI_API_KEY`; the local bot program receives tool requests and executes them in its allowed container workspace.
 - Conversation sessions are in memory and are lost when the bot restarts; direct OpenAI usage metadata persists outside Git at `/workspace/.personal-agent-state/usage.sqlite3` by default.
@@ -80,9 +84,10 @@ Last updated: 2026-07-30
 
 ## Validation
 
-- Current validation: all 154 tests pass via `python -m pytest`; `git diff --check`, default Compose rendering, and manual-deployer Compose rendering pass. Coverage includes deployer-only state mounts and rejection of unpublished local commits before checkout inspection or build.
-- The built image imports the SDK, backend, and Telegram modules, contains neither the Docker nor SSH client executable, and successfully starts and stops the bundled Codex app-server with an existing temporary `CODEX_HOME` mount.
-- Live device login, ChatGPT turns, Telegram exchanges, authentication restart persistence, and outside-workspace/network/Docker/Git-push denial checks remain manual and have not been run. Nothing was published or restarted.
+- Current validation: all 158 tests pass via `python -m pytest`; `git diff --check` and seccomp JSON validation pass.
+- The bot image builds with pinned `openai-codex==0.144.4`, system Bubblewrap, and `uv==0.11.32`. Docker accepts the custom seccomp profile and successfully creates the inner Bubblewrap sandbox.
+- Container smoke tests verify workspace write access and deny inherited Telegram secrets, `/codex-home` authentication reads, `/trace-state` reads, outside-workspace writes, direct shell networking, and Docker access.
+- Live ChatGPT/Telegram approval-button behavior, authentication restart persistence, and credential-backed Git-push denial remain to be exercised after deployment. Nothing has been published or restarted in this change yet.
 - Both the bot and deployer images build successfully with the tracing changes, their Python modules import inside the built images, and the recreated services report healthy/running after deployment.
 - The audio- and image-capable bot image builds successfully; its production audio handler registers and synchronous model calls can be offloaded from the event loop. Neither media path has yet been exercised against live Telegram or OpenAI services.
 - The durable-usage bot image built successfully and the replacement bot reached Docker health; a live post-deployment `/usage` exchange and model call have not yet been exercised.

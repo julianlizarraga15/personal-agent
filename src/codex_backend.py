@@ -4,16 +4,188 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
+import ipaddress
 import logging
+import os
 from pathlib import Path
+import re
 from typing import Any
 
-from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+import openai_codex
+from openai_codex import AsyncCodex
+from openai_codex.api import AsyncThread
+from openai_codex.client import CodexConfig
+from openai_codex.generated.v2_all import (
+    ApprovalsReviewer,
+    AskForApproval,
+    Granular,
+    GranularAskForApproval,
+    ThreadStartParams,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 StatusCallback = Callable[[str], Awaitable[None]]
+ApprovalCallback = Callable[["NetworkApprovalRequest"], Awaitable[bool]]
+PINNED_CODEX_VERSION = "0.144.4"
+TELEGRAM_APPROVAL_MODE = "telegram_user"
+APPROVAL_TIMEOUT_SECONDS = 305
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+CODEX_PERMISSION_OVERRIDES = (
+    'default_permissions="telegram-workspace"',
+    'permissions.telegram-workspace.extends=":workspace"',
+    'permissions.telegram-workspace.filesystem={"/codex-home"="deny","/trace-state"="deny",'
+    '":workspace_roots"={"**/*.env"="deny"},glob_scan_max_depth=6}',
+    "permissions.telegram-workspace.network.enabled=false",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkApprovalRequest:
+    """A destination-scoped network request safe to render in Telegram."""
+
+    method: str
+    thread_id: str
+    turn_id: str
+    host: str
+    protocol: str
+    port: int
+    reason: str
+    cwd: str
+
+    @property
+    def destination(self) -> str:
+        return f"{self.protocol}://{self.host}:{self.port}"
+
+    def response(self, approved: bool) -> dict[str, Any]:
+        return {"decision": "accept" if approved else "decline"}
+
+
+def _decline_approval(method: str) -> dict[str, Any]:
+    if method == "item/permissions/requestApproval":
+        return {"permissions": {}, "scope": "turn"}
+    if method in {
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+    }:
+        return {"decision": "decline"}
+    return {}
+
+
+def _public_https_host(host: object, protocol: object, port: object) -> tuple[str, int] | None:
+    if not isinstance(host, str) or not isinstance(protocol, str):
+        return None
+    normalized = host.strip().lower().rstrip(".")
+    if protocol.lower() != "https" or not _HOSTNAME_RE.fullmatch(normalized):
+        return None
+    if normalized == "localhost" or normalized.endswith((".localhost", ".local", ".internal")):
+        return None
+    try:
+        ipaddress.ip_address(normalized)
+    except ValueError:
+        pass
+    else:
+        return None
+    if port is None:
+        port_value = 443
+    elif isinstance(port, int) and not isinstance(port, bool):
+        port_value = port
+    else:
+        return None
+    if port_value != 443:
+        return None
+    return normalized, port_value
+
+
+def network_approval_request(method: str, params: dict[str, Any] | None) -> NetworkApprovalRequest | None:
+    """Accept only destination-scoped public HTTPS approval payloads."""
+
+    if not isinstance(params, dict):
+        return None
+    context: dict[str, Any] | None = None
+    if method == "item/commandExecution/requestApproval":
+        value = params.get("networkApprovalContext")
+        if isinstance(value, dict):
+            context = value
+    if context is None:
+        return None
+    target = _public_https_host(context.get("host"), context.get("protocol"), context.get("port"))
+    if target is None:
+        return None
+    thread_id = params.get("threadId")
+    turn_id = params.get("turnId")
+    if not isinstance(thread_id, str) or not isinstance(turn_id, str):
+        return None
+    host, port = target
+    reason = params.get("reason") if isinstance(params.get("reason"), str) else "Codex requested this destination."
+    cwd = params.get("cwd") if isinstance(params.get("cwd"), str) else ""
+    return NetworkApprovalRequest(
+        method=method,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        host=host,
+        protocol="https",
+        port=port,
+        reason=reason[:500],
+        cwd=cwd,
+    )
+
+
+class _InteractiveAsyncCodex(AsyncCodex):
+    """Pinned SDK compatibility layer for owner-reviewed app-server approvals."""
+
+    def __init__(self, approval_handler: Callable[[str, dict[str, Any] | None], dict[str, Any]]) -> None:
+        if openai_codex.__version__ != PINNED_CODEX_VERSION:
+            raise RuntimeError(
+                f"Manual approval adapter requires openai-codex {PINNED_CODEX_VERSION}; "
+                f"found {openai_codex.__version__}."
+            )
+        launcher = os.environ.get("CODEX_SAFE_LAUNCHER", "/usr/local/bin/codex-safe-launcher")
+        super().__init__(
+            CodexConfig(
+                codex_bin=launcher,
+                config_overrides=CODEX_PERMISSION_OVERRIDES,
+            )
+        )
+        sync_client = getattr(getattr(self, "_client", None), "_sync", None)
+        if sync_client is None or not hasattr(sync_client, "_approval_handler"):
+            raise RuntimeError("Pinned Codex SDK approval interface is unavailable.")
+        sync_client._approval_handler = approval_handler
+
+    async def thread_start(  # type: ignore[override]
+        self,
+        *,
+        approval_mode: str,
+        cwd: str,
+        ephemeral: bool,
+        sandbox: None,
+    ) -> AsyncThread:
+        if approval_mode != TELEGRAM_APPROVAL_MODE or sandbox is not None:
+            raise ValueError("Telegram Codex threads require the managed permissions profile.")
+        await self._ensure_initialized()
+        approval_policy = AskForApproval(
+            root=GranularAskForApproval(
+                granular=Granular(
+                    mcp_elicitations=False,
+                    request_permissions=False,
+                    rules=False,
+                    sandbox_approval=True,
+                    skill_approval=False,
+                )
+            )
+        )
+        started = await self._client.thread_start(
+            ThreadStartParams(
+                approval_policy=approval_policy,
+                approvals_reviewer=ApprovalsReviewer.user,
+                cwd=cwd,
+                ephemeral=ephemeral,
+            )
+        )
+        return AsyncThread(self, started.thread.id)
 
 
 class CodexBackendError(RuntimeError):
@@ -37,6 +209,8 @@ class CodexSession:
     cwd: Path
     thread: Any
     active_turn: Any | None = None
+    approval_callback: ApprovalCallback | None = field(default=None, repr=False)
+    event_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
@@ -112,7 +286,7 @@ class CodexBackend:
     """Application-scoped SDK client and ephemeral per-user threads."""
 
     def __init__(self, client: Any | None = None) -> None:
-        self.client = client or AsyncCodex()
+        self.client = client or _InteractiveAsyncCodex(self._handle_approval)
         self.sessions: dict[int, CodexSession] = {}
         self._started = False
         self._session_lock = asyncio.Lock()
@@ -138,14 +312,41 @@ class CodexBackend:
     async def _start_thread(self, cwd: Path) -> CodexSession:
         try:
             thread = await self.client.thread_start(
-                approval_mode=ApprovalMode.deny_all,
+                approval_mode=TELEGRAM_APPROVAL_MODE,
                 cwd=str(cwd),
                 ephemeral=True,
-                sandbox=Sandbox.workspace_write,
+                sandbox=None,
             )
         except Exception as exc:
             raise translate_codex_error(exc) from exc
         return CodexSession(cwd=cwd, thread=thread)
+
+    def _handle_approval(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+        """Bridge the SDK reader thread to the owning Telegram event loop."""
+
+        request = network_approval_request(method, params)
+        if request is None:
+            return _decline_approval(method)
+        session = next(
+            (
+                candidate
+                for candidate in self.sessions.values()
+                if getattr(candidate.thread, "id", None) == request.thread_id
+            ),
+            None,
+        )
+        if session is None or session.approval_callback is None or session.event_loop is None:
+            return request.response(False)
+        try:
+            future = asyncio.run_coroutine_threadsafe(session.approval_callback(request), session.event_loop)
+            approved = bool(future.result(timeout=APPROVAL_TIMEOUT_SECONDS))
+        except FutureTimeoutError:
+            LOGGER.warning("Codex network approval expired")
+            approved = False
+        except Exception:
+            LOGGER.warning("Codex network approval failed or expired", exc_info=True)
+            approved = False
+        return request.response(approved)
 
     async def new_session(self, user_id: int, cwd: Path) -> CodexSession:
         cwd = cwd.resolve()
@@ -179,6 +380,7 @@ class CodexBackend:
         *,
         default_cwd: Path,
         on_status: StatusCallback | None = None,
+        on_approval: ApprovalCallback | None = None,
     ) -> str:
         session = self.sessions.get(user_id)
         if session is None:
@@ -187,6 +389,8 @@ class CodexBackend:
             raise CodexBusyError("I’m still working on your previous request.")
 
         await session.turn_lock.acquire()
+        session.approval_callback = on_approval
+        session.event_loop = asyncio.get_running_loop()
         completed_items: list[Any] = []
         try:
             handle = await session.thread.turn(text)
@@ -225,6 +429,8 @@ class CodexBackend:
             raise translate_codex_error(exc) from exc
         finally:
             session.active_turn = None
+            session.approval_callback = None
+            session.event_loop = None
             session.turn_lock.release()
 
         if self.sessions.get(user_id) is not session:

@@ -4,9 +4,11 @@ This project runs an agent that can modify and push code, so deployment security
 
 ## Controls
 
-- The default Codex backend starts ephemeral threads with workspace-write sandboxing and deny-all approvals. It may edit only the selected mounted workspace; attempted escalation fails without prompting in Telegram.
-- The bot has no Docker socket, SSH private key, Git push credential, or OpenAI API key. `CODEX_HOME` is a private Docker volume containing ChatGPT authentication and Codex configuration and must never be baked into an image or committed.
-- Shell networking, Docker access, writes outside the selected workspace, and credential-backed Git publication are outside the pass-1 bot boundary. The optional deployer is the only service with Docker authority, is disabled by default behind a manual profile, and deployment is host-initiated.
+- The default Codex backend starts ephemeral threads with a named permission profile extending `:workspace`. System Bubblewrap keeps commands inside the selected workspace. The Docker seccomp profile adds the namespace and mount syscalls Bubblewrap requires without `SYS_ADMIN`, privileged mode, or an unconfined seccomp/AppArmor setting.
+- The bot has no Docker socket, SSH private key, Git push credential, or OpenAI API key. `CODEX_HOME` is a private Docker volume containing ChatGPT authentication and Codex configuration and must never be baked into an image or committed. Sandboxed commands are explicitly denied access to `/codex-home`, `/trace-state`, and workspace `.env` files.
+- The Codex launcher uses an environment allowlist. Bot tokens, API keys, Git credentials, and inherited proxy variables do not reach the app-server or its child commands.
+- Shell networking is blocked by default. Only an exact public HTTPS hostname on port 443 may produce an owner-only Telegram approval. Approval is destination-scoped, current-turn-only, expires after five minutes, and is cancelled by `/stop`, `/new`, or `/project`. Local/private hosts, IP literals, non-HTTPS traffic, filesystem escalation, and all other SDK approval methods fail closed.
+- Docker access, writes outside the selected workspace, and credential-backed Git publication remain outside the pass-1 bot boundary and cannot be approved. The optional deployer is the only service with Docker authority, is disabled by default behind a manual profile, and deployment is host-initiated.
 - Deployment requests and status live in the deployer-only `deployer-state` volume. The bot cannot mount or enqueue into it. A deployer request is rejected unless its commit matches both a clean local checkout and the configured HTTPS remote branch, preventing a locally forged commit from reaching Docker build authority.
 - Codex-mode sessions and Telegram-to-thread mappings are memory-only. Restarting discards conversations while retaining authentication in `CODEX_HOME`.
 - Images, audio, legacy approvals, usage/trace exports, `/run`, and self-deployment commands are not registered in Codex mode. The controls below describe dormant `AGENT_BACKEND=responses` rollback behavior where applicable.
@@ -36,12 +38,12 @@ This project runs an agent that can modify and push code, so deployment security
 - Use a dedicated Git identity/token with the minimum repository permissions needed to create branches and push them.
 - Do not mount the host filesystem, SSH agent, cloud credentials, or personal home directory into the bot or worker containers. The only intended host mount is the dedicated project `workspace/` directory.
 - Pin or regularly review base images and Python dependencies before production use.
-- Treat approval messages as exact-action confirmations; review the displayed path, operation, and summary before approving.
+- Treat a Codex network approval as an exact-destination confirmation. Verify the HTTPS hostname is necessary for the current task; the button does not grant broader shell or filesystem authority.
 - Restrict the Telegram bot token and rotate it immediately if it is exposed.
 
 ## Threat assumptions
 
-Repository code, issue text, commit messages, task requests, text visible inside images, and transcribed speech may contain prompt injection or malicious build steps. The agent must treat them as data, and operators should assume that running project tests can execute arbitrary code. Use a disposable host or stronger container isolation for untrusted repositories.
+Repository code, issue text, commit messages, task requests, text visible inside images, and transcribed speech may contain prompt injection or malicious build steps. The agent must treat them as data, and operators should assume that running project tests can execute arbitrary code inside the command sandbox. A network approval can still disclose workspace-readable data to the approved destination; review it accordingly. Use a disposable host or stronger isolation for highly untrusted repositories.
 
 The trace database intentionally increases the amount of sensitive, owner-readable data at rest. Provider-private instructions and controls, raw chain-of-thought not returned by the API, hosted-search internals not returned by the provider, deleted original media, and credential values removed by redaction are outside the transparency contract. Protect and expire the state directory; the default retention is seven days.
 

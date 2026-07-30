@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
@@ -11,6 +12,7 @@ from codex_backend import (
     CodexTurnDiscarded,
     event_status,
     final_message_from_items,
+    network_approval_request,
     translate_codex_error,
 )
 
@@ -37,6 +39,7 @@ class FakeTurnHandle:
 
 class FakeThread:
     def __init__(self, turns):
+        self.id = "thread-1"
         self.turns = list(turns)
         self.prompts = []
 
@@ -81,7 +84,7 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((client.entered, client.exited), (1, 1))
 
-    async def test_thread_is_ephemeral_sandboxed_and_denies_approvals(self):
+    async def test_thread_uses_ephemeral_managed_permissions(self):
         thread = FakeThread([])
         client = FakeClient([thread])
         backend = CodexBackend(client)
@@ -89,8 +92,8 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
 
         options = client.start_calls[0]
         self.assertTrue(options["ephemeral"])
-        self.assertEqual(options["sandbox"].value, "workspace-write")
-        self.assertEqual(options["approval_mode"].value, "deny_all")
+        self.assertIsNone(options["sandbox"])
+        self.assertEqual(options["approval_mode"], "telegram_user")
         self.assertEqual(options["cwd"], "/tmp")
         self.assertNotIn("model", options)
         self.assertNotIn("personality", options)
@@ -135,6 +138,40 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         handle.interrupt.assert_awaited_once()
         self.assertNotIn(42, backend.sessions)
 
+    async def test_network_approval_bridge_returns_owner_decision(self):
+        backend = CodexBackend(FakeClient([FakeThread([])]))
+        session = await backend.new_session(42, Path("/tmp"))
+        session.approval_callback = AsyncMock(return_value=True)
+        session.event_loop = asyncio.get_running_loop()
+        result = []
+        thread = threading.Thread(
+            target=lambda: result.append(
+                backend._handle_approval(
+                    "item/commandExecution/requestApproval",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "networkApprovalContext": {"host": "pypi.org", "protocol": "https"},
+                    },
+                )
+            )
+        )
+
+        thread.start()
+        while thread.is_alive():
+            await asyncio.sleep(0.01)
+        thread.join()
+
+        self.assertEqual(result, [{"decision": "accept"}])
+        session.approval_callback.assert_awaited_once()
+        self.assertEqual(
+            backend._handle_approval(
+                "item/fileChange/requestApproval",
+                {"threadId": "thread-1", "turnId": "turn-1"},
+            ),
+            {"decision": "decline"},
+        )
+
     async def test_second_turn_is_rejected_while_first_is_starting(self):
         thread = FakeThread([])
         backend = CodexBackend(FakeClient([thread]))
@@ -177,6 +214,32 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         for detail, expected in cases.items():
             with self.subTest(detail=detail):
                 self.assertIn(expected, translate_codex_error(RuntimeError(detail)).user_message)
+
+    def test_only_public_https_network_approval_is_exposed(self):
+        base = {
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "networkApprovalContext": {"host": "pypi.org", "protocol": "https", "port": 443},
+        }
+        request = network_approval_request("item/commandExecution/requestApproval", base)
+        self.assertIsNotNone(request)
+        self.assertEqual(request.destination, "https://pypi.org:443")
+        self.assertEqual(request.response(True), {"decision": "accept"})
+
+        for host, protocol, port in (
+            ("localhost", "https", 443),
+            ("127.0.0.1", "https", 443),
+            ("metadata.internal", "https", 443),
+            ("pypi.org", "http", 80),
+            ("pypi.org", "https", 8443),
+        ):
+            params = dict(base)
+            params["networkApprovalContext"] = {"host": host, "protocol": protocol, "port": port}
+            with self.subTest(host=host, protocol=protocol, port=port):
+                self.assertIsNone(network_approval_request("item/commandExecution/requestApproval", params))
+
+        self.assertIsNone(network_approval_request("item/fileChange/requestApproval", base))
+        self.assertIsNone(network_approval_request("item/permissions/requestApproval", base))
 
 
 if __name__ == "__main__":

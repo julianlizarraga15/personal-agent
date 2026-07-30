@@ -12,6 +12,7 @@ import gzip
 import json
 import logging
 import os
+import secrets
 import subprocess
 import threading
 import time
@@ -27,7 +28,7 @@ from PIL import Image, UnidentifiedImageError
 from telegram.error import BadRequest
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext, prompt_export
-from codex_backend import CodexBackend, CodexBackendError, CodexTurnDiscarded
+from codex_backend import CodexBackend, CodexBackendError, CodexTurnDiscarded, NetworkApprovalRequest
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
@@ -35,7 +36,9 @@ from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 
 LOGGER = logging.getLogger(__name__)
 CODEX_BACKEND_KEY = "codex_backend"
+CODEX_APPROVALS_KEY = "codex_approvals"
 CODEX_STATUS_DEBOUNCE_SECONDS = 1.5
+CODEX_APPROVAL_TIMEOUT_SECONDS = 300
 
 STATUS_MESSAGES = {
     "cloning repository": "Cloning repository…",
@@ -264,6 +267,76 @@ class PendingApproval:
         self.approved = approved
         self.event.set()
         return True
+
+
+@dataclass
+class CodexPendingApproval:
+    token: str
+    user_id: int
+    destination: str
+    future: asyncio.Future[bool] = field(repr=False)
+    prompt_message: object | None = field(default=None, repr=False)
+
+
+class CodexApprovalBroker:
+    """Owner-only, in-memory approvals scoped to a single Codex turn."""
+
+    def __init__(self) -> None:
+        self.pending: dict[str, CodexPendingApproval] = {}
+
+    async def request(self, message: object, user_id: int, request: NetworkApprovalRequest) -> bool:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        token = secrets.token_hex(8)
+        future = asyncio.get_running_loop().create_future()
+        pending = CodexPendingApproval(token, user_id, request.destination, future)
+        self.pending[token] = pending
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Allow once", callback_data=f"codex-net:{token}:allow"),
+                InlineKeyboardButton("Reject", callback_data=f"codex-net:{token}:reject"),
+            ]]
+        )
+        prompt = (
+            "Codex wants temporary network access for this turn only.\n"
+            f"Destination: {request.destination}\n"
+            f"Reason: {request.reason}\n"
+            "Allowing this does not grant shell escalation, Docker access, credentials, or access outside the workspace."
+        )
+        result = "Approval rejected."
+        try:
+            pending.prompt_message = await message.reply_text(prompt, reply_markup=keyboard)  # type: ignore[attr-defined]
+            approved = await asyncio.wait_for(asyncio.shield(future), CODEX_APPROVAL_TIMEOUT_SECONDS)
+            result = "Approved once." if approved else "Rejected."
+        except TimeoutError:
+            approved = False
+            result = "Approval expired."
+        except Exception:
+            LOGGER.warning("Codex approval prompt failed user_id=%s", user_id, exc_info=True)
+            approved = False
+            result = "Approval rejected."
+        finally:
+            self.pending.pop(token, None)
+            if pending.prompt_message is not None:
+                editor = getattr(pending.prompt_message, "edit_text", None)
+                if editor is not None:
+                    try:
+                        await editor(f"{result}\nDestination: {request.destination}")
+                    except Exception:
+                        LOGGER.debug("Codex approval prompt finalization failed", exc_info=True)
+        return approved
+
+    def resolve(self, token: str, user_id: int, approved: bool) -> bool:
+        pending = self.pending.get(token)
+        if pending is None or pending.user_id != user_id or pending.future.done():
+            return False
+        pending.future.set_result(approved)
+        return True
+
+    def cancel_user(self, user_id: int) -> None:
+        for pending in tuple(self.pending.values()):
+            if pending.user_id == user_id and not pending.future.done():
+                pending.future.set_result(False)
 
 
 @dataclass
@@ -540,6 +613,14 @@ def _codex_backend(context: object) -> CodexBackend:
     return bot_data[CODEX_BACKEND_KEY]
 
 
+def _codex_approvals(context: object) -> CodexApprovalBroker:
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", None)
+    if not isinstance(bot_data, dict) or CODEX_APPROVALS_KEY not in bot_data:
+        raise RuntimeError("Codex approval broker is not initialized")
+    return bot_data[CODEX_APPROVALS_KEY]
+
+
 def _workspace_root() -> Path:
     return Path(os.environ.get("AGENT_WORKSPACE_ROOT", "/workspace")).resolve()
 
@@ -560,6 +641,7 @@ async def codex_select_project(update: Update, context: ContextTypes.DEFAULT_TYP
     if not project_path.is_dir():
         await message.reply_text(f"I can’t find a project directory at {project_path}.")
         return
+    _codex_approvals(context).cancel_user(user.id)
     try:
         await _codex_backend(context).new_session(user.id, project_path)
     except CodexBackendError as exc:
@@ -573,6 +655,7 @@ async def codex_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     message = update.effective_message
     if user is None or message is None or not _is_allowed(user.id):
         return
+    _codex_approvals(context).cancel_user(user.id)
     try:
         await _codex_backend(context).new_session(user.id, _workspace_root())
     except CodexBackendError as exc:
@@ -586,6 +669,7 @@ async def codex_stop_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message = update.effective_message
     if user is None or message is None or not _is_allowed(user.id):
         return
+    _codex_approvals(context).cancel_user(user.id)
     await _codex_backend(context).stop_session(user.id)
     await message.reply_text("Session stopped and discarded.")
 
@@ -599,8 +683,25 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text(
         "Chat normally to work with Codex in the configured workspace.\n"
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
-        "Images and audio are not supported in pass 1."
+        "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. Images and audio are not supported in pass 1."
     )
+
+
+async def codex_network_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if query is None or user is None or not _is_allowed(user.id):
+        return
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "codex-net" or parts[2] not in {"allow", "reject"}:
+        await query.answer("This approval is invalid.", show_alert=True)
+        return
+    resolved = _codex_approvals(context).resolve(parts[1], user.id, parts[2] == "allow")
+    if resolved:
+        await query.answer("Allowed once." if parts[2] == "allow" else "Rejected.")
+    else:
+        await query.answer("This approval has expired.", show_alert=True)
 
 
 async def codex_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -642,6 +743,7 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
             message.text or "",
             default_cwd=_workspace_root(),
             on_status=update_status,
+            on_approval=lambda request: _codex_approvals(context).request(message, user.id, request),
         )
     except CodexTurnDiscarded:
         return
@@ -1554,11 +1656,14 @@ async def start_codex_application(application: object) -> None:
 
 
 async def stop_codex_application(application: object) -> None:
+    broker = application.bot_data[CODEX_APPROVALS_KEY]  # type: ignore[attr-defined]
+    for pending in tuple(broker.pending.values()):
+        broker.cancel_user(pending.user_id)
     await application.bot_data[CODEX_BACKEND_KEY].close()  # type: ignore[attr-defined]
 
 
 def build_application(environ: dict[str, str] | None = None) -> Application:
-    from telegram.ext import Application, CommandHandler
+    from telegram.ext import Application, CallbackQueryHandler, CommandHandler
     from telegram.ext import MessageHandler, MessageReactionHandler, filters
 
     token, allowed_id, _ = required_settings(environ)
@@ -1575,10 +1680,12 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     application = builder.build()
     if backend_name == "codex":
         application.bot_data[CODEX_BACKEND_KEY] = CodexBackend()
+        application.bot_data[CODEX_APPROVALS_KEY] = CodexApprovalBroker()
         application.add_handler(CommandHandler("project", codex_select_project))
         application.add_handler(CommandHandler("new", codex_new_session))
         application.add_handler(CommandHandler("stop", codex_stop_session))
         application.add_handler(CommandHandler(["help", "start"], codex_help_command))
+        application.add_handler(CallbackQueryHandler(codex_network_approval, pattern=r"^codex-net:"))
         media_filter = filters.PHOTO | filters.Document.IMAGE | filters.VOICE | filters.AUDIO | filters.Document.AUDIO
         for extension in ("flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "ogg", "wav", "webm"):
             media_filter |= filters.Document.FileExtension(extension)
@@ -1623,7 +1730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     LOGGER.info("bot starting")
-    updates = ("message",) if selected_backend() == "codex" else ("message", "message_reaction")
+    updates = ("message", "callback_query") if selected_backend() == "codex" else ("message", "message_reaction")
     build_application().run_polling(allowed_updates=updates)
     return 0
 

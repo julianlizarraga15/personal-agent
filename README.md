@@ -51,9 +51,11 @@ docker compose up -d bot
 
 Open the printed verification URL, enter its code, and wait for the command to report success. Never copy `auth.json` into an image or repository.
 
-The bot accepts only `TELEGRAM_ALLOWED_USER_ID`. Ordinary text starts an ephemeral Codex thread in the workspace root. `/project <directory>` validates a directory beneath that root and starts a fresh thread there; `/new` starts fresh at the root; `/stop` interrupts the active turn and discards the session; `/help` lists the same pass-1 surface. One turn may run per user. Restarting the bot forgets every thread but preserves login state.
+The bot accepts only `TELEGRAM_ALLOWED_USER_ID`. Ordinary text starts an ephemeral Codex thread in the workspace root. `/project <directory>` validates a directory beneath that root and starts a fresh thread there; `/new` starts fresh at the root; `/stop` interrupts the active turn and discards the session; `/help` lists the same pass-1 surface. One turn may run per user. Restarting the bot forgets every thread but preserves login state. The image includes `uv` for Python project setup.
 
-Threads use Codex defaults with `Sandbox.workspace_write` and deny-all approvals. Codex may edit the selected workspace automatically. Requests for escalation, writes outside the sandbox, shell networking, Docker access, or credential-backed Git push fail without an approval prompt. Images and audio are rejected in pass 1; send text instead.
+Threads use a named Codex permissions profile derived from `:workspace`. Codex may edit and run commands in the selected workspace automatically. Network is blocked by default; when Codex encounters one exact public HTTPS destination on port 443, Telegram shows owner-only **Allow once** and **Reject** buttons. Grants last only for the active turn and expire after five minutes. `/stop`, `/new`, and `/project` reject pending requests. All file-change escalation, access outside the workspace, private/local network destinations, Docker access, and credential-backed Git publication remain unapprovable.
+
+The bot image uses system Bubblewrap with a narrow seccomp profile rather than privileged mode, `SYS_ADMIN`, or an unconfined container. A clean launcher prevents Codex commands from inheriting Telegram, OpenAI, Git, or proxy credentials. The command sandbox cannot read `/codex-home`, `/trace-state`, or workspace `.env` files. The Compose bot still has no Docker socket or Git credentials.
 
 To select a project and work across continued turns:
 
@@ -69,6 +71,8 @@ Now add tests for that validation
 ```
 
 Agent replies use the existing safe Telegram Markdown renderer. A single debounced activity message reports coarse thinking, command, and file-change progress.
+
+If a turn needs to download declared dependencies, review the displayed hostname and approve only when it matches the task. The approval does not authorize a different host, later turn, non-HTTPS connection, shell escape, or broader filesystem access.
 
 ### Dormant Responses rollback
 
