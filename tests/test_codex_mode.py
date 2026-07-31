@@ -67,9 +67,10 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("unconfined", bot)
 
         backend = Path("src/codex_backend.py").read_text(encoding="utf-8")
-        self.assertIn('network.unix_sockets={"/run/api-football.sock"="allow"}', backend)
         self.assertNotIn("dangerously_allow_all_unix_sockets", backend)
-        self.assertIn("api-football --help", backend)
+        self.assertNotIn("network.unix_sockets", backend)
+        self.assertIn("api-football-mcp", backend)
+        self.assertIn("network.enabled=false", backend)
 
         deployer = compose.split("  deployer:", 1)[1].split("  codex-login:", 1)[0]
         self.assertIn('profiles: ["manual-deployer"]', deployer)

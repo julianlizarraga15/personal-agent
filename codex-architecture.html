@@ -471,7 +471,7 @@
       <section class="section" aria-labelledby="boundary">
         <div class="section-head">
           <div><div class="kicker">03 · Security boundary</div><h2 id="boundary">Workspace power, not host power</h2></div>
-          <p class="section-note">A named workspace profile blocks sensitive mounts and public network access. It allows one credential-safe analytics socket; exact public HTTPS still needs owner approval.</p>
+          <p class="section-note">A named workspace profile blocks sensitive mounts, direct networking, and Unix sockets. A trusted keyless MCP tool supplies approved analytics; exact public HTTPS still needs owner approval.</p>
         </div>
 
         <div class="split">
@@ -482,7 +482,7 @@
               <li>Read and modify workspace files</li>
               <li>Run local commands and project tests</li>
               <li>Use <code>uv</code> to create and manage Python projects</li>
-              <li>Query approved analytics through <code>api-football</code></li>
+              <li>Query approved analytics through the API-Football MCP tool</li>
               <li>Request one exact HTTPS destination with owner buttons</li>
               <li>Continue a thread across Telegram messages</li>
               <li>Report progress and return formatted answers</li>

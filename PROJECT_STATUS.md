@@ -4,7 +4,7 @@ Last updated: 2026-07-31
 
 ## Current state
 
-- A credential-safe in-process API-Football gateway serves the exact `/run/api-football.sock` Unix socket. The sandbox-visible `api-football` command can query enumerated read-only analytics endpoints, while the bot alone holds `API_FOOTBALL_KEY` and attaches `x-apisports-key` to a fixed TLS-verified API-Sports origin.
+- A credential-safe in-process API-Football gateway serves `/run/api-football.sock`. A required keyless stdio MCP tool gives Codex approved read-only access while project shell networking stays disabled; the bot alone holds `API_FOOTBALL_KEY` and attaches `x-apisports-key` to a fixed TLS-verified API-Sports origin. The trusted container-diagnostic CLI uses the same bounded protocol.
 - The gateway rejects full URLs, traversal, non-GET and unknown endpoints, malformed or excessive parameters, odds, bookmakers, and predictions. Requests and JSON responses are bounded, proxy inheritance is ignored, errors are sanitized, and the credential is recursively removed from any returned value.
 - A protected atomic counter in `trace-state` permits 100 attempted upstream calls per UTC day. Invalid local requests do not count and the first version has no cache. Missing configuration leaves the bot healthy and returns a clear helper error.
 - Pass 1 defaults Telegram conversation to pinned `openai-codex==0.144.4` through one application-scoped `AsyncCodex` instance.
@@ -44,13 +44,12 @@ Last updated: 2026-07-31
 
 ## Last stopping point
 
-- The API-Football gateway implementation, tests, documentation, architecture HTML, security guidance, and ADR are complete locally. The full Python suite and image build pass; the real container socket protocol succeeds with Docker networking disabled. Publication, production recreation, and live API-Football/Telegram checks remain before handoff.
+- The API-Football gateway, trusted MCP adapter, diagnostic CLI, tests, documentation, architecture HTML, security guidance, and ADR are complete and published on `main`. The full Python suite and image build pass. Disposable live app-server testing confirms the MCP reaches the gateway while sandboxed peer Unix sockets and direct TCP fail with `EPERM`.
 
 ## Next steps
 
-- Publish the tested API-Football implementation to `main`, recreate only the bot, and confirm the persistent `codex-state` and `trace-state` volumes are retained.
-- If the owner has configured the private API-Sports dashboard key, run live `api-football get status`, request Argentine Primera División data through Telegram, and confirm no network approval or credential disclosure occurs.
-- Verify the app-server-enforced Unix socket allowlist rejects every path except `/run/api-football.sock`; standalone `codex sandbox` does not start the same Unix-socket proxy and is not a valid negative test for peer sockets.
+- Configure the private API-Sports dashboard key, run the trusted live status diagnostic, request Argentine Primera División data through Telegram, and confirm no network approval or credential disclosure occurs.
+- Keep the project-command network profile disabled and retain the MCP boundary; the latest available `openai-codex==0.144.4` does not safely enforce its documented Unix-socket allowlist when profile networking is enabled.
 - Verify authentication survives restart and that restart begins a fresh conversation.
 - Exercise normal chat, repository read/edit/test work, `/new`, `/stop`, `/project`, progress editing, and formatted final responses.
 - Exercise a dependency install through Telegram: reject once, approve the exact public HTTPS destination once, and confirm a later turn asks again.
@@ -89,8 +88,8 @@ Last updated: 2026-07-31
 
 ## Validation
 
-- API-Football focused tests cover fixed-host authentication injection, proxy independence, secret redaction, endpoint/parameter validation, traversal and URL rejection, response bounds, timeouts, upstream errors, atomic concurrent quota updates, missing-key behavior, socket cleanup, and startup failure cleanup. Host-local socket cases skip because the outer sandbox rejects Unix binds; the same real protocol passes inside the built bot image.
-- Current validation: all 158 tests pass via `python -m pytest`; `git diff --check` and seccomp JSON validation pass.
+- All 174 Python tests pass; two host-local socket cases skip because the outer sandbox rejects Unix binds. API-Football coverage includes fixed-host authentication injection, proxy independence, secret redaction, endpoint/parameter validation, traversal and URL rejection, response bounds, timeouts, upstream errors, atomic concurrent quota updates, missing-key behavior, socket cleanup, MCP discovery/calls/errors, and startup failure cleanup. The real socket protocol and app-server/MCP boundary pass inside disposable built-image tests.
+- Current validation: all 174 tests pass via `python -m pytest`; `git diff --check`, Compose validation, and seccomp JSON validation pass.
 - The bot image builds with pinned `openai-codex==0.144.4`, system Bubblewrap, and `uv==0.11.32`. Docker accepts the custom seccomp profile and successfully creates the inner Bubblewrap sandbox.
 - Container smoke tests verify workspace write access and deny inherited Telegram secrets, `/codex-home` authentication reads, `/trace-state` reads, outside-workspace writes, direct shell networking, and Docker access.
 - Commit `f722e0e` is published on `origin/main`. The production bot was recreated with image `sha256:6abe0410772b6b4f6330aeda28eca1595e049c4da07cfd12e31ee3ea2eda33de`, retained the original `personal-agent_codex-state` volume, reached healthy state, and logged a clean Telegram application startup.

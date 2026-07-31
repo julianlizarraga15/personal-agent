@@ -22,7 +22,7 @@
 - Confirm a normal text turn, continued context, repository read/edit/test work, `/new`, `/project`, `/stop`, progress editing, and Markdown rendering.
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
 - Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
-- Run `api-football get status` through a Codex task. With a key it should return status JSON without a network approval; without one it should clearly report that API-Football is not configured. Confirm Codex cannot read the key, `/trace-state`, `.env`, any other Unix socket, or direct network.
+- Ask Codex to use the API-Football MCP tool for `status`. With a key it should return status JSON without a network approval; without one it should clearly report that API-Football is not configured. Confirm sandboxed commands cannot read the key, `/trace-state`, `.env`, any Unix socket, or direct network. Use `api-football get status` only as a trusted container-side diagnostic.
 
 ## Common failures
 

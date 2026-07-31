@@ -39,13 +39,16 @@ CODEX_PERMISSION_OVERRIDES = (
     'permissions.telegram-workspace.extends=":workspace"',
     'permissions.telegram-workspace.filesystem={"/codex-home"="deny","/trace-state"="deny",'
     '":workspace_roots"={"**/*.env"="deny"},glob_scan_max_depth=6}',
-    "permissions.telegram-workspace.network.enabled=true",
-    'permissions.telegram-workspace.network.unix_sockets={"/run/api-football.sock"="allow"}',
+    "permissions.telegram-workspace.network.enabled=false",
+    'mcp_servers.api-football.command="/usr/local/bin/api-football-mcp"',
+    "mcp_servers.api-football.required=true",
+    'mcp_servers.api-football.enabled_tools=["get"]',
+    'mcp_servers.api-football.default_tools_approval_mode="auto"',
 )
 
 CODEX_CAPABILITY_INSTRUCTION = (
-    "A credential-safe `api-football` command is available for approved football analytics. "
-    "Run `api-football --help` for usage. Never attempt to locate, read, print, or reveal its credential."
+    "A credential-safe API-Football MCP get tool is available for approved football analytics. "
+    "Use that tool rather than shell networking. Never attempt to locate, read, print, or reveal its credential."
 )
 
 
