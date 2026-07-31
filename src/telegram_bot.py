@@ -28,6 +28,7 @@ from PIL import Image, UnidentifiedImageError
 from telegram.error import BadRequest
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext, prompt_export
+from api_football import ApiFootballGateway
 from codex_backend import CodexBackend, CodexBackendError, CodexTurnDiscarded, NetworkApprovalRequest
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
@@ -37,6 +38,7 @@ from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 LOGGER = logging.getLogger(__name__)
 CODEX_BACKEND_KEY = "codex_backend"
 CODEX_APPROVALS_KEY = "codex_approvals"
+API_FOOTBALL_GATEWAY_KEY = "api_football_gateway"
 CODEX_STATUS_DEBOUNCE_SECONDS = 1.5
 CODEX_APPROVAL_TIMEOUT_SECONDS = 300
 
@@ -1642,8 +1644,14 @@ async def start_codex_application(application: object) -> None:
 
     from telegram import BotCommand
 
+    gateway = application.bot_data[API_FOOTBALL_GATEWAY_KEY]  # type: ignore[attr-defined]
+    await gateway.start()
     backend = application.bot_data[CODEX_BACKEND_KEY]  # type: ignore[attr-defined]
-    await backend.start()
+    try:
+        await backend.start()
+    except Exception:
+        await gateway.close()
+        raise
     await application.bot.set_my_commands(  # type: ignore[attr-defined]
         [
             BotCommand("project", "start fresh in a project directory"),
@@ -1660,13 +1668,15 @@ async def stop_codex_application(application: object) -> None:
     for pending in tuple(broker.pending.values()):
         broker.cancel_user(pending.user_id)
     await application.bot_data[CODEX_BACKEND_KEY].close()  # type: ignore[attr-defined]
+    await application.bot_data[API_FOOTBALL_GATEWAY_KEY].close()  # type: ignore[attr-defined]
 
 
 def build_application(environ: dict[str, str] | None = None) -> Application:
     from telegram.ext import Application, CallbackQueryHandler, CommandHandler
     from telegram.ext import MessageHandler, MessageReactionHandler, filters
 
-    token, allowed_id, _ = required_settings(environ)
+    source = os.environ if environ is None else environ
+    token, allowed_id, _ = required_settings(source)
     backend_name = selected_backend(environ)
     builder = Application.builder().token(token).concurrent_updates(True)
     if backend_name == "codex":
@@ -1681,6 +1691,9 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
     if backend_name == "codex":
         application.bot_data[CODEX_BACKEND_KEY] = CodexBackend()
         application.bot_data[CODEX_APPROVALS_KEY] = CodexApprovalBroker()
+        application.bot_data[API_FOOTBALL_GATEWAY_KEY] = ApiFootballGateway(
+            source.get("API_FOOTBALL_KEY")
+        )
         application.add_handler(CommandHandler("project", codex_select_project))
         application.add_handler(CommandHandler("new", codex_new_session))
         application.add_handler(CommandHandler("stop", codex_stop_session))

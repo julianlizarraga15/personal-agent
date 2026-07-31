@@ -43,7 +43,7 @@ Create `.env`, build the image, and perform the one-time device login. The `code
 
 ```bash
 cp .env.example .env
-# edit the Telegram token and numeric owner ID
+# edit the Telegram token and numeric owner ID; optionally add API_FOOTBALL_KEY
 docker compose build bot
 docker compose run --rm codex-login
 docker compose up -d bot
@@ -53,7 +53,9 @@ Open the printed verification URL, enter its code, and wait for the command to r
 
 The bot accepts only `TELEGRAM_ALLOWED_USER_ID`. Ordinary text starts an ephemeral Codex thread in the workspace root. `/project <directory>` validates a directory beneath that root and starts a fresh thread there; `/new` starts fresh at the root; `/stop` interrupts the active turn and discards the session; `/help` lists the same pass-1 surface. One turn may run per user. Restarting the bot forgets every thread but preserves login state. The image includes `uv` for Python project setup.
 
-Threads use a named Codex permissions profile derived from `:workspace`. Codex may edit and run commands in the selected workspace automatically. Network is blocked by default; when Codex encounters one exact public HTTPS destination on port 443, Telegram shows owner-only **Allow once** and **Reject** buttons. Grants last only for the active turn and expire after five minutes. `/stop`, `/new`, and `/project` reject pending requests. All file-change escalation, access outside the workspace, private/local network destinations, Docker access, and credential-backed Git publication remain unapprovable.
+Threads use a named Codex permissions profile derived from `:workspace`. Codex may edit and run commands in the selected workspace automatically. Public network destinations are blocked by default; when Codex encounters one exact public HTTPS destination on port 443, Telegram shows owner-only **Allow once** and **Reject** buttons. Grants last only for the active turn and expire after five minutes. `/stop`, `/new`, and `/project` reject pending requests. All file-change escalation, access outside the workspace, other private/local network destinations, Docker access, and credential-backed Git publication remain unapprovable.
+
+When the optional `API_FOOTBALL_KEY` from the API-Sports dashboard is set in the private host `.env`, Codex can query approved read-only football analytics with `api-football`. The command talks only to `/run/api-football.sock`; the in-process bot gateway fixes the upstream origin to `https://v3.football.api-sports.io`, verifies TLS, injects `x-apisports-key`, ignores proxy environment variables, and never gives the key to Codex. Run `api-football endpoints` or `api-football --help` inside a Codex task. Odds, bookmakers, predictions, full URLs, non-GET requests, and unknown endpoints are rejected. A protected atomic counter in `trace-state` allows at most 100 attempted upstream calls per UTC day; invalid local requests do not count, and there is no response cache. Without a configured key the bot remains healthy and the helper reports that API-Football is not configured.
 
 The bot image uses system Bubblewrap with a narrow seccomp profile rather than privileged mode, `SYS_ADMIN`, or an unconfined container. A clean launcher prevents Codex commands from inheriting Telegram, OpenAI, Git, or proxy credentials. The command sandbox cannot read `/codex-home`, `/trace-state`, or workspace `.env` files. The Compose bot still has no Docker socket or Git credentials.
 

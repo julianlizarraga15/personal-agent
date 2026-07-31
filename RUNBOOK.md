@@ -2,7 +2,7 @@
 
 ## Start locally
 
-1. Copy `.env.example` to `.env` and fill in the Telegram token and allowed user ID.
+1. Copy `.env.example` to `.env` and fill in the Telegram token and allowed user ID. To enable football analytics, add the API-Sports dashboard value as `API_FOOTBALL_KEY`; never send it through Telegram.
 2. Build the bot and complete one-time ChatGPT device login:
 
    ```bash
@@ -22,6 +22,7 @@
 - Confirm a normal text turn, continued context, repository read/edit/test work, `/new`, `/project`, `/stop`, progress editing, and Markdown rendering.
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
 - Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
+- Run `api-football get status` through a Codex task. With a key it should return status JSON without a network approval; without one it should clearly report that API-Football is not configured. Confirm Codex cannot read the key, `/trace-state`, `.env`, any other Unix socket, or direct network.
 
 ## Common failures
 
@@ -34,6 +35,7 @@
 - Agent tool failure: verify the selected project exists under `workspace/` and rebuild after dependency changes.
 - Image/audio rejected: pass 1 accepts text only.
 - Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
+- API-Football unavailable: verify the bot owns `/run/api-football.sock`, the private host `.env` contains the dashboard key, and `/trace-state/api-football-quota.json` is writable. Do not print either file. A missing key is non-fatal; an insecure socket startup or unavailable quota store fails requests safely.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 - State storage full/unavailable: free space or restore the mount. The deployer retains an active request when failure state cannot be persisted and resumes it after restart. The bot continues answering when the usage ledger or trace database cannot be written, reports durable usage totals as unavailable or incomplete, logs trace write loss without private content, and resumes recording future requests when storage recovers.
 

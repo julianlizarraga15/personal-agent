@@ -58,11 +58,18 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("github_key", bot)
         self.assertNotIn("GIT_SSH_COMMAND", bot)
         self.assertNotIn("OPENAI_API_KEY", bot)
+        self.assertIn("API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}", bot)
         self.assertNotIn("DEPLOYMENT_STATE_DIR", bot)
         self.assertIn("seccomp=./security/codex-bwrap-seccomp.json", bot)
+        self.assertIn("trace-state:/trace-state", bot)
         self.assertNotIn("cap_add", bot)
         self.assertNotIn("privileged:", bot)
         self.assertNotIn("unconfined", bot)
+
+        backend = Path("src/codex_backend.py").read_text(encoding="utf-8")
+        self.assertIn('network.unix_sockets={"/run/api-football.sock"="allow"}', backend)
+        self.assertNotIn("dangerously_allow_all_unix_sockets", backend)
+        self.assertIn("api-football --help", backend)
 
         deployer = compose.split("  deployer:", 1)[1].split("  codex-login:", 1)[0]
         self.assertIn('profiles: ["manual-deployer"]', deployer)
@@ -70,6 +77,31 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("DEPLOYMENT_STATE_DIR: /deployment-state", deployer)
         self.assertIn("DEPLOY_REMOTE_URL:", deployer)
         self.assertNotIn("/workspace/.personal-agent-state", deployer)
+        self.assertNotIn("API_FOOTBALL_KEY", deployer)
+
+        login = compose.split("  codex-login:", 1)[1].split("volumes:", 1)[0]
+        self.assertNotIn("API_FOOTBALL_KEY", login)
+
+    async def test_codex_startup_starts_gateway_before_backend_and_cleans_up_on_failure(self):
+        order = []
+        gateway = SimpleNamespace(
+            start=AsyncMock(side_effect=lambda: order.append("gateway-start")),
+            close=AsyncMock(side_effect=lambda: order.append("gateway-close")),
+        )
+        backend = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("failed")))
+        application = SimpleNamespace(
+            bot_data={
+                telegram_bot.API_FOOTBALL_GATEWAY_KEY: gateway,
+                telegram_bot.CODEX_BACKEND_KEY: backend,
+            },
+            bot=SimpleNamespace(set_my_commands=AsyncMock()),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            await telegram_bot.start_codex_application(application)
+
+        self.assertEqual(order, ["gateway-start", "gateway-close"])
+        backend.start.assert_awaited_once()
 
     async def test_network_approval_is_owner_bound_and_one_shot(self):
         prompt_message = SimpleNamespace(edit_text=AsyncMock())

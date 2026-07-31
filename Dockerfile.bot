@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir .
 
 RUN test -x /usr/bin/bwrap \
     && test -x /bin/uv \
-    && test -x /usr/local/bin/codex-safe-launcher
+    && test -x /usr/local/bin/codex-safe-launcher \
+    && test -x /usr/local/bin/api-football
 
 ENTRYPOINT ["python", "-m", "telegram_bot"]

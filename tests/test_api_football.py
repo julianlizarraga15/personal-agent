@@ -1,0 +1,242 @@
+import asyncio
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import socket
+import ssl
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from api_football import (
+    API_HOST,
+    ALLOWED_ENDPOINTS,
+    ApiFootballError,
+    ApiFootballGateway,
+    DailyQuota,
+    MAX_RESPONSE_BYTES,
+    _upstream_get,
+    redact_secret,
+    validate_request,
+)
+from api_football_cli import request_gateway
+
+
+class FakeResponse:
+    def __init__(self, body: bytes, *, status: int = 200, declared: str | None = None):
+        self.body = body
+        self.status = status
+        self.declared = declared
+
+    def getheader(self, name):
+        return self.declared if name == "Content-Length" else None
+
+    def read(self, amount):
+        return self.body[:amount]
+
+
+class FakeConnection:
+    response = FakeResponse(b'{"response":[]}')
+    error = None
+    instance = None
+
+    def __init__(self, host, port, *, timeout, context):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.context = context
+        self.request_call = None
+        self.closed = False
+        type(self).instance = self
+
+    def request(self, method, path, headers):
+        self.request_call = (method, path, headers)
+        if self.error:
+            raise self.error
+
+    def getresponse(self):
+        return self.response
+
+    def close(self):
+        self.closed = True
+
+
+class ValidationTests(unittest.TestCase):
+    def test_allowed_analytics_endpoints_exclude_betting_and_predictions(self):
+        self.assertIn("fixtures/statistics", ALLOWED_ENDPOINTS)
+        self.assertIn("players/topscorers", ALLOWED_ENDPOINTS)
+        self.assertIn("coachs", ALLOWED_ENDPOINTS)
+        for endpoint in ("odds", "bookmakers", "predictions"):
+            self.assertNotIn(endpoint, ALLOWED_ENDPOINTS)
+
+    def test_valid_request_is_normalized(self):
+        endpoint, params = validate_request(
+            {"method": "GET", "endpoint": "standings", "params": {"league": 128, "season": "2026"}}
+        )
+        self.assertEqual(endpoint, "standings")
+        self.assertEqual(params, {"league": "128", "season": "2026"})
+
+    def test_rejects_full_urls_traversal_methods_and_unknown_endpoints(self):
+        invalid = [
+            {"method": "GET", "endpoint": "https://example.com", "params": {}},
+            {"method": "GET", "endpoint": "../status", "params": {}},
+            {"method": "POST", "endpoint": "status", "params": {}},
+            {"method": "GET", "endpoint": "odds", "params": {}},
+        ]
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(ApiFootballError):
+                validate_request(request)
+
+    def test_rejects_unknown_malformed_and_excessive_parameters(self):
+        invalid = [
+            {"method": "GET", "endpoint": "status", "params": {"key": "value"}},
+            {"method": "GET", "endpoint": "teams", "params": {"id": "not-an-id"}},
+            {"method": "GET", "endpoint": "countries", "params": {"search": "https://bad.test"}},
+            {"method": "GET", "endpoint": "countries", "params": {f"x{i}": "a" for i in range(21)}},
+        ]
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(ApiFootballError):
+                validate_request(request)
+
+    def test_redacts_secret_recursively(self):
+        value = {"value": "before-secret-after", "nested": ["secret", {"secret-key": "safe"}]}
+        redacted = redact_secret(value, "secret")
+        self.assertNotIn("secret", json.dumps(redacted))
+
+
+class UpstreamTests(unittest.TestCase):
+    def setUp(self):
+        FakeConnection.response = FakeResponse(b'{"response":[]}')
+        FakeConnection.error = None
+        FakeConnection.instance = None
+
+    def test_fixed_tls_host_auth_header_and_proxy_independence(self):
+        with patch("api_football.http.client.HTTPSConnection", FakeConnection), patch.dict(
+            os.environ, {"HTTPS_PROXY": "http://attacker.invalid:8888"}
+        ):
+            result = _upstream_get("status", {}, "top-secret")
+        connection = FakeConnection.instance
+        self.assertEqual(result, {"response": []})
+        self.assertEqual((connection.host, connection.port), (API_HOST, 443))
+        self.assertIsInstance(connection.context, ssl.SSLContext)
+        self.assertEqual(connection.request_call, ("GET", "/status", {"x-apisports-key": "top-secret", "Accept": "application/json"}))
+        self.assertTrue(connection.closed)
+
+    def test_response_secret_is_redacted(self):
+        FakeConnection.response = FakeResponse(b'{"echo":"top-secret"}')
+        with patch("api_football.http.client.HTTPSConnection", FakeConnection):
+            result = _upstream_get("status", {}, "top-secret")
+        self.assertEqual(result, {"echo": "[REDACTED]"})
+
+    def test_declared_and_actual_response_limits(self):
+        for response in (
+            FakeResponse(b"{}", declared=str(MAX_RESPONSE_BYTES + 1)),
+            FakeResponse(b"{" + b" " * MAX_RESPONSE_BYTES + b"}"),
+        ):
+            FakeConnection.response = response
+            with self.subTest(declared=response.declared), patch(
+                "api_football.http.client.HTTPSConnection", FakeConnection
+            ), self.assertRaisesRegex(ApiFootballError, "size limit"):
+                _upstream_get("status", {}, "secret")
+
+    def test_timeout_and_upstream_http_errors_are_sanitized(self):
+        FakeConnection.error = socket.timeout("secret details")
+        with patch("api_football.http.client.HTTPSConnection", FakeConnection), self.assertRaisesRegex(
+            ApiFootballError, "timed out"
+        ) as timeout_error:
+            _upstream_get("status", {}, "secret")
+        self.assertNotIn("details", str(timeout_error.exception))
+        FakeConnection.error = None
+        FakeConnection.response = FakeResponse(b'{"errors":{"token":"secret"}}', status=500)
+        with patch("api_football.http.client.HTTPSConnection", FakeConnection), self.assertRaisesRegex(
+            ApiFootballError, "HTTP 500"
+        ) as http_error:
+            _upstream_get("status", {}, "secret")
+        self.assertNotIn("secret", str(http_error.exception))
+
+
+class QuotaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quota_persists_resets_by_utc_day_and_stops_at_100(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quota.json"
+            quota = DailyQuota(path)
+            results = await asyncio.gather(*(quota.consume(day="2026-07-31") for _ in range(100)))
+            self.assertEqual(sorted(results), list(range(1, 101)))
+            with self.assertRaisesRegex(ApiFootballError, "daily request limit"):
+                await quota.consume(day="2026-07-31")
+            self.assertEqual(await quota.consume(day="2026-08-01"), 1)
+            self.assertEqual(json.loads(path.read_text()), {"date": "2026-08-01", "count": 1})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    async def test_invalid_local_request_does_not_consume_quota(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quota.json"
+            quota = DailyQuota(path)
+            with self.assertRaises(ApiFootballError):
+                validate_request({"method": "GET", "endpoint": "odds", "params": {}})
+            self.assertFalse(path.exists())
+
+
+class GatewayProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def _start_or_skip(self, gateway):
+        try:
+            await gateway.start()
+        except PermissionError as exc:
+            if exc.errno == 1:
+                self.skipTest("test sandbox does not permit binding Unix sockets")
+            raise
+
+    async def test_missing_key_is_healthy_and_returns_clear_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "gateway.sock"
+            gateway = ApiFootballGateway(None, socket_path=socket_path)
+            await self._start_or_skip(gateway)
+            try:
+                self.assertTrue(socket_path.exists())
+                response = await request_gateway({"method": "GET", "endpoint": "status", "params": {}}, socket_path)
+            finally:
+                await gateway.close()
+            self.assertEqual(response, {"ok": False, "error": "API-Football is not configured."})
+            self.assertFalse(socket_path.exists())
+
+    async def test_socket_protocol_success_and_key_never_returns(self):
+        calls = []
+
+        def upstream(endpoint, params, key):
+            calls.append((endpoint, params, key))
+            return {"response": [{"echo": key}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            socket_path = directory_path / "gateway.sock"
+            gateway = ApiFootballGateway(
+                "top-secret",
+                socket_path=socket_path,
+                quota=DailyQuota(directory_path / "quota.json"),
+                upstream=upstream,
+            )
+            await self._start_or_skip(gateway)
+            try:
+                response = await request_gateway(
+                    {"method": "GET", "endpoint": "standings", "params": {"league": "128", "season": "2026"}},
+                    socket_path,
+                )
+            finally:
+                await gateway.close()
+            self.assertEqual(calls, [("standings", {"league": "128", "season": "2026"}, "top-secret")])
+            self.assertNotIn("top-secret", json.dumps(response))
+            self.assertEqual(response["data"]["response"][0]["echo"], "[REDACTED]")
+
+    async def test_existing_non_socket_path_fails_securely(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "gateway.sock"
+            socket_path.write_text("do not replace", encoding="utf-8")
+            gateway = ApiFootballGateway("secret", socket_path=socket_path)
+            with self.assertRaisesRegex(RuntimeError, "not a socket"):
+                await gateway.start()
+            self.assertEqual(socket_path.read_text(), "do not replace")
+
+
+if __name__ == "__main__":
+    unittest.main()

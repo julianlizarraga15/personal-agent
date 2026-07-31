@@ -12,6 +12,7 @@ class CodexRuntimeTests(unittest.TestCase):
             "TELEGRAM_BOT_TOKEN": "secret",
             "OPENAI_API_KEY": "secret",
             "GITHUB_TOKEN": "secret",
+            "API_FOOTBALL_KEY": "football-secret",
             "HTTPS_PROXY": "http://secret-proxy",
         }
         with patch("codex_runtime.bundled_path_dir", return_value="/opt/codex"):
@@ -20,7 +21,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(clean["CODEX_HOME"], "/codex-home")
         self.assertEqual(clean["HOME"], "/tmp/codex-runtime-home")
         self.assertTrue(clean["PATH"].startswith("/opt/codex:"))
-        for key in ("TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN", "HTTPS_PROXY"):
+        for key in ("TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN", "API_FOOTBALL_KEY", "HTTPS_PROXY"):
             self.assertNotIn(key, clean)
 
 

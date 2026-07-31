@@ -463,7 +463,7 @@
           <article class="resource" data-mark="T">
             <span class="tag purple">Private volume</span>
             <h3><code>/trace-state</code></h3>
-            <p>The existing protected trace store remains mounted. Legacy trace commands are hidden in Codex mode.</p>
+            <p>The protected trace store also holds the atomic 100-request UTC daily API-Football counter. Sandboxed commands cannot read it.</p>
           </article>
         </div>
       </section>
@@ -471,7 +471,7 @@
       <section class="section" aria-labelledby="boundary">
         <div class="section-head">
           <div><div class="kicker">03 · Security boundary</div><h2 id="boundary">Workspace power, not host power</h2></div>
-          <p class="section-note">A named workspace profile blocks network and sensitive mounts. Only one exact public HTTPS destination can be allowed for the current turn.</p>
+          <p class="section-note">A named workspace profile blocks sensitive mounts and public network access. It allows one credential-safe analytics socket; exact public HTTPS still needs owner approval.</p>
         </div>
 
         <div class="split">
@@ -482,6 +482,7 @@
               <li>Read and modify workspace files</li>
               <li>Run local commands and project tests</li>
               <li>Use <code>uv</code> to create and manage Python projects</li>
+              <li>Query approved analytics through <code>api-football</code></li>
               <li>Request one exact HTTPS destination with owner buttons</li>
               <li>Continue a thread across Telegram messages</li>
               <li>Report progress and return formatted answers</li>
@@ -493,9 +494,9 @@
             <ul>
               <li>No Docker socket or deployment queue</li>
               <li>No SSH key or Git push credential</li>
-              <li>No OpenAI API key</li>
+              <li>No OpenAI or API-Football API key</li>
               <li>No writes outside the workspace sandbox</li>
-              <li>No private/local or unapproved shell networking</li>
+              <li>No other private/local or unapproved shell networking</li>
               <li>No reads of Codex auth, trace state, or <code>.env</code></li>
             </ul>
           </article>

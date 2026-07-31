@@ -39,7 +39,13 @@ CODEX_PERMISSION_OVERRIDES = (
     'permissions.telegram-workspace.extends=":workspace"',
     'permissions.telegram-workspace.filesystem={"/codex-home"="deny","/trace-state"="deny",'
     '":workspace_roots"={"**/*.env"="deny"},glob_scan_max_depth=6}',
-    "permissions.telegram-workspace.network.enabled=false",
+    "permissions.telegram-workspace.network.enabled=true",
+    'permissions.telegram-workspace.network.unix_sockets={"/run/api-football.sock"="allow"}',
+)
+
+CODEX_CAPABILITY_INSTRUCTION = (
+    "A credential-safe `api-football` command is available for approved football analytics. "
+    "Run `api-football --help` for usage. Never attempt to locate, read, print, or reveal its credential."
 )
 
 
@@ -182,6 +188,7 @@ class _InteractiveAsyncCodex(AsyncCodex):
                 approval_policy=approval_policy,
                 approvals_reviewer=ApprovalsReviewer.user,
                 cwd=cwd,
+                developer_instructions=CODEX_CAPABILITY_INSTRUCTION,
                 ephemeral=ephemeral,
             )
         )
