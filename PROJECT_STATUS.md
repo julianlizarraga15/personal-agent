@@ -41,11 +41,10 @@ Last updated: 2026-07-30
 
 ## Last stopping point
 
-- The Bubblewrap runtime fix and scoped Telegram network approvals are implemented locally. The full Python suite passes and the bot image builds. The Moby-derived profile was exercised directly: workspace writes succeed while bot-secret inheritance, auth/trace reads, outside-workspace writes, direct network access, and Docker access fail.
+- The Bubblewrap runtime fix and scoped Telegram network approvals were published to `main` at `f722e0e` and deployed to the production bot. The full Python suite passes and the bot image builds. The Moby-derived profile was exercised directly: workspace writes succeed while bot-secret inheritance, auth/trace reads, outside-workspace writes, direct network access, and Docker access fail.
 
 ## Next steps
 
-- Publish and deploy the validated bot from a trusted, clean checkout; do not start the deployer for ordinary operation.
 - Verify authentication survives restart and that restart begins a fresh conversation.
 - Exercise normal chat, repository read/edit/test work, `/new`, `/stop`, `/project`, progress editing, and formatted final responses.
 - Exercise a dependency install through Telegram: reject once, approve the exact public HTTPS destination once, and confirm a later turn asks again.
@@ -87,7 +86,8 @@ Last updated: 2026-07-30
 - Current validation: all 158 tests pass via `python -m pytest`; `git diff --check` and seccomp JSON validation pass.
 - The bot image builds with pinned `openai-codex==0.144.4`, system Bubblewrap, and `uv==0.11.32`. Docker accepts the custom seccomp profile and successfully creates the inner Bubblewrap sandbox.
 - Container smoke tests verify workspace write access and deny inherited Telegram secrets, `/codex-home` authentication reads, `/trace-state` reads, outside-workspace writes, direct shell networking, and Docker access.
-- Live ChatGPT/Telegram approval-button behavior, authentication restart persistence, and credential-backed Git-push denial remain to be exercised after deployment. Nothing has been published or restarted in this change yet.
+- Commit `f722e0e` is published on `origin/main`. The production bot was recreated with image `sha256:6abe0410772b6b4f6330aeda28eca1595e049c4da07cfd12e31ee3ea2eda33de`, retained the original `personal-agent_codex-state` volume, reached healthy state, and logged a clean Telegram application startup.
+- Live ChatGPT/Telegram approval-button behavior, authentication restart persistence, and credential-backed Git-push denial remain to be exercised through Telegram.
 - Both the bot and deployer images build successfully with the tracing changes, their Python modules import inside the built images, and the recreated services report healthy/running after deployment.
 - The audio- and image-capable bot image builds successfully; its production audio handler registers and synchronous model calls can be offloaded from the event loop. Neither media path has yet been exercised against live Telegram or OpenAI services.
 - The durable-usage bot image built successfully and the replacement bot reached Docker health; a live post-deployment `/usage` exchange and model call have not yet been exercised.
