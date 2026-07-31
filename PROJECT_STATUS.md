@@ -44,7 +44,7 @@ Last updated: 2026-07-31
 
 ## Last stopping point
 
-- The API-Football gateway, trusted MCP adapter, diagnostic CLI, tests, documentation, architecture HTML, security guidance, and ADR are complete and published on `main`. The full Python suite and image build pass. Disposable live app-server testing confirms the MCP reaches the gateway while sandboxed peer Unix sockets and direct TCP fail with `EPERM`.
+- The API-Football gateway, trusted MCP adapter, diagnostic CLI, tests, documentation, architecture HTML, security guidance, and ADR are complete, published on `main`, and deployed. The production bot is healthy on image `sha256:491e756ed9c846f623bc3fba869e1185923d6b3428476e38306a830df4cb2bbe` with the existing `codex-state` and `trace-state` volumes retained. A live production app-server test confirms the MCP reaches the gateway while sandboxed peer Unix sockets and direct TCP fail with `EPERM`.
 
 ## Next steps
 
@@ -90,6 +90,7 @@ Last updated: 2026-07-31
 
 - All 174 Python tests pass; two host-local socket cases skip because the outer sandbox rejects Unix binds. API-Football coverage includes fixed-host authentication injection, proxy independence, secret redaction, endpoint/parameter validation, traversal and URL rejection, response bounds, timeouts, upstream errors, atomic concurrent quota updates, missing-key behavior, socket cleanup, MCP discovery/calls/errors, and startup failure cleanup. The real socket protocol and app-server/MCP boundary pass inside disposable built-image tests.
 - Current validation: all 174 tests pass via `python -m pytest`; `git diff --check`, Compose validation, and seccomp JSON validation pass.
+- The production API-Football MCP returns the safe missing-key error, the owner-only gateway socket is mode `0600`, and no quota file is created for the missing-configuration request. The private host `.env` does not yet configure `API_FOOTBALL_KEY`, so no upstream quota was consumed and live status/Argentine Primera División data checks remain pending.
 - The bot image builds with pinned `openai-codex==0.144.4`, system Bubblewrap, and `uv==0.11.32`. Docker accepts the custom seccomp profile and successfully creates the inner Bubblewrap sandbox.
 - Container smoke tests verify workspace write access and deny inherited Telegram secrets, `/codex-home` authentication reads, `/trace-state` reads, outside-workspace writes, direct shell networking, and Docker access.
 - Commit `f722e0e` is published on `origin/main`. The production bot was recreated with image `sha256:6abe0410772b6b4f6330aeda28eca1595e049c4da07cfd12e31ee3ea2eda33de`, retained the original `personal-agent_codex-state` volume, reached healthy state, and logged a clean Telegram application startup.
