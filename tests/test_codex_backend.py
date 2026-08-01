@@ -13,6 +13,7 @@ from codex_backend import (
     event_status,
     final_message_from_items,
     network_approval_request,
+    telegram_images_from_message,
     translate_codex_error,
 )
 
@@ -107,7 +108,8 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         first = await backend.run_turn(42, "one", default_cwd=Path("/tmp"))
         second = await backend.run_turn(42, "two", default_cwd=Path("/tmp"))
 
-        self.assertEqual((first, second), ("first", "second"))
+        self.assertEqual((first.text, second.text), ("first", "second"))
+        self.assertEqual((first.cwd, second.cwd), (Path("/tmp"), Path("/tmp")))
         self.assertEqual(thread.prompts, ["one", "two"])
         self.assertEqual(len(client.start_calls), 1)
 
@@ -203,6 +205,17 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         draft = SimpleNamespace(type="agentMessage", text="draft", phase=None)
         final = SimpleNamespace(type="agentMessage", text="done", phase=SimpleNamespace(value="final_answer"))
         self.assertEqual(final_message_from_items([draft, final]), "done")
+
+    def test_telegram_image_markers_are_removed_and_bounded(self):
+        text, paths = telegram_images_from_message(
+            "Done.\n[[telegram_image:plots/a.png]]\n[[telegram_image:/tmp/b.jpg]]"
+        )
+
+        self.assertEqual(text, "Done.")
+        self.assertEqual(paths, ("plots/a.png", "/tmp/b.jpg"))
+
+        only_marker, _ = telegram_images_from_message("[[telegram_image:plot.png]]")
+        self.assertEqual(only_marker, "Here’s the image.")
 
     def test_error_translation_covers_operational_failures(self):
         cases = {

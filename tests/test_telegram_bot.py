@@ -13,7 +13,24 @@ from pathlib import Path
 from PIL import Image
 
 import telegram_bot
-from telegram_bot import DEFAULT_IMAGE_PROMPT, ConversationSession, PendingApproval, WorkerExecutionError, _deployment_report, _monitor_deployment, _queued_deployment, _reply_agent_response, _telegram_html, _validate_image, required_settings, run_docker_worker, workspace_project_path
+from codex_backend import CodexTurnResult
+from telegram_bot import (
+    DEFAULT_IMAGE_PROMPT,
+    ConversationSession,
+    PendingApproval,
+    WorkerExecutionError,
+    _codex_image_bytes,
+    _deployment_report,
+    _monitor_deployment,
+    _queued_deployment,
+    _reply_agent_response,
+    _reply_codex_images,
+    _telegram_html,
+    _validate_image,
+    required_settings,
+    run_docker_worker,
+    workspace_project_path,
+)
 from usage import ModelUsage, SessionUsage, UsageStore
 
 
@@ -247,6 +264,55 @@ class AgentResponseFormattingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.reply_text.await_args_list[0].kwargs["parse_mode"], "HTML")
         self.assertEqual(message.reply_text.await_args_list[1].args[0], "A **bold** answer")
         self.assertNotIn("parse_mode", message.reply_text.await_args_list[1].kwargs)
+
+
+class CodexOutputImageTests(unittest.IsolatedAsyncioTestCase):
+    PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    async def test_codex_image_is_sent_as_photo(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "plot.png").write_bytes(self.PNG)
+            result = CodexTurnResult("Here it is.", root, ("plot.png",))
+            message = SimpleNamespace(reply_photo=AsyncMock(), reply_document=AsyncMock())
+
+            failures = await _reply_codex_images(message, result)
+
+        self.assertEqual(failures, 0)
+        message.reply_photo.assert_awaited_once()
+        self.assertEqual(message.reply_photo.await_args.kwargs["photo"].getvalue(), self.PNG)
+        message.reply_document.assert_not_awaited()
+
+    async def test_photo_failure_falls_back_to_document(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "plot.png").write_bytes(self.PNG)
+            result = CodexTurnResult("Here it is.", root, ("plot.png",))
+            message = SimpleNamespace(
+                reply_photo=AsyncMock(side_effect=telegram_bot.BadRequest("photo rejected")),
+                reply_document=AsyncMock(),
+            )
+
+            failures = await _reply_codex_images(message, result)
+
+        self.assertEqual(failures, 0)
+        message.reply_document.assert_awaited_once()
+        self.assertEqual(message.reply_document.await_args.kwargs["document"].getvalue(), self.PNG)
+
+    def test_codex_image_must_be_valid_and_inside_selected_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "project"
+            root.mkdir()
+            (root / "bad.png").write_bytes(b"not an image")
+            (base / "outside.png").write_bytes(self.PNG)
+
+            with self.assertRaises(ValueError):
+                _codex_image_bytes(root, "bad.png")
+            with self.assertRaises(ValueError):
+                _codex_image_bytes(root, "../outside.png")
 
 
 class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):

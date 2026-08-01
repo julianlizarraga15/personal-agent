@@ -6,7 +6,7 @@ An autonomous coding agent controlled through Telegram.
 
 ## Worker responsibilities
 
-- Receive a text task (Codex pass 1); the dormant Responses path also supports validated image and transcribed audio turns
+- Receive a text task and return text plus requested workspace images (Codex pass 1); the dormant Responses path also supports validated incoming image and transcribed audio turns
 - Clone or open a project repository
 - Inspect existing code
 - Run a coding agent
@@ -16,9 +16,9 @@ An autonomous coding agent controlled through Telegram.
 
 ## Current architecture
 
-Telegram long polling → authorized text input → ephemeral in-memory Telegram session → official Codex Python SDK thread → Bubblewrap workspace permissions + trusted API-Football MCP tool → optional exact-host HTTPS approval → debounced activity + rendered final answer
+Telegram long polling → authorized text input → ephemeral in-memory Telegram session → official Codex Python SDK thread → Bubblewrap workspace permissions + trusted API-Football MCP tool → optional exact-host HTTPS approval → debounced activity + rendered final answer + verified requested workspace images
 
-One application-scoped `AsyncCodex` process serves all authorized turns. Each Telegram user has at most one ephemeral thread and active turn. A thread starts with the selected project as `cwd` and a named permissions profile extending `:workspace`, without application overrides for model, personality, or base instructions. A minimal developer instruction advertises the API-Football MCP tool and forbids credential discovery or disclosure. System Bubblewrap enforces filesystem and network isolation inside the bot container. A dedicated seccomp allowlist permits only the namespace and mount syscalls Bubblewrap needs; the container receives no added capability, privileged mode, or unconfined security setting.
+One application-scoped `AsyncCodex` process serves all authorized turns. Each Telegram user has at most one ephemeral thread and active turn. A thread starts with the selected project as `cwd` and a named permissions profile extending `:workspace`, without application overrides for model, personality, or base instructions. A minimal developer instruction advertises the API-Football MCP tool, forbids credential discovery or disclosure, and defines an output marker for images the owner explicitly asks to receive. The adapter removes that marker from visible text and passes only bounded candidate paths to Telegram delivery. System Bubblewrap enforces filesystem and network isolation inside the bot container. A dedicated seccomp allowlist permits only the namespace and mount syscalls Bubblewrap needs; the container receives no added capability, privileged mode, or unconfined security setting.
 
 The Codex app-server starts through a launcher that replaces, rather than extends, the bot environment. Commands and MCP children inherit no Telegram token, API-Football key, OpenAI/Git credentials, or upstream proxy. The permissions profile denies `/codex-home`, `/trace-state`, workspace `.env` files, direct TCP, and every Unix socket, while keeping the selected workspace writable. A blocked public HTTPS request on port 443 can reach the in-memory Telegram approval broker; every other approval category fails closed. An owner button grants that one destination for the current turn, expires after five minutes, and is cancelled by `/new`, `/project`, or `/stop`.
 
@@ -26,7 +26,7 @@ The Telegram process starts an asynchronous API-Football gateway on `/run/api-fo
 
 Thread mappings and approvals are never persisted. `CODEX_HOME` is a private volume used by the unsandboxed app-server for authentication and Codex configuration, but is unreadable to sandboxed project commands.
 
-The bot container can write the mounted workspace and includes `uv`, but has no Docker socket, SSH key, OpenAI API key, Git push credential, or deployment-queue mount. The optional deployer is behind the `manual-deployer` Compose profile, has no restart policy, and stores its queue in a named volume mounted only into that service. Before any build, it resolves the configured HTTPS remote ref and requires the request, clean local `HEAD`, and published commit to match exactly. Codex-mode Telegram registration includes text, callback queries, `/project`, `/new`, `/stop`, and `/help`; media and legacy operational commands are unavailable. Deployment is a manual host operation in pass 1.
+The bot container can write the mounted workspace and includes `uv`, but has no Docker socket, SSH key, OpenAI API key, Git push credential, or deployment-queue mount. The optional deployer is behind the `manual-deployer` Compose profile, has no restart policy, and stores its queue in a named volume mounted only into that service. Before any build, it resolves the configured HTTPS remote ref and requires the request, clean local `HEAD`, and published commit to match exactly. Codex-mode Telegram registration includes text, callback queries, `/project`, `/new`, `/stop`, and `/help`; incoming media and legacy operational commands are unavailable. Requested outgoing images are resolved beneath the selected project, size-capped, decoded as supported static formats, and uploaded only to the authorized owner. Deployment is a manual host operation in pass 1.
 
 The previous Responses architecture below is dormant rollback code selected only with `AGENT_BACKEND=responses`.
 

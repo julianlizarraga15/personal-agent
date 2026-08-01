@@ -48,8 +48,15 @@ CODEX_PERMISSION_OVERRIDES = (
 
 CODEX_CAPABILITY_INSTRUCTION = (
     "A credential-safe API-Football MCP get tool is available for approved football analytics. "
-    "Use that tool rather than shell networking. Never attempt to locate, read, print, or reveal its credential."
+    "Use that tool rather than shell networking. Never attempt to locate, read, print, or reveal its credential. "
+    "When the user asks you to send an image you created in the workspace through Telegram, include one "
+    "standalone line per image at the end of the final response in exactly this form: "
+    "[[telegram_image:path/to/image.png]]. Use a path inside the current workspace or selected project. "
+    "Do not use this marker for files the user did not ask to receive."
 )
+
+_TELEGRAM_IMAGE_RE = re.compile(r"^[ \t]*\[\[telegram_image:(.+?)\]\][ \t]*$", re.MULTILINE)
+MAX_TELEGRAM_IMAGES_PER_TURN = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +221,15 @@ class CodexTurnDiscarded(RuntimeError):
     """The session was intentionally replaced while its turn was ending."""
 
 
+@dataclass(frozen=True, slots=True)
+class CodexTurnResult:
+    """Completed text plus workspace image paths requested for Telegram delivery."""
+
+    text: str
+    cwd: Path
+    image_paths: tuple[str, ...] = ()
+
+
 @dataclass
 class CodexSession:
     cwd: Path
@@ -267,6 +283,21 @@ def final_message_from_items(items: list[Any]) -> str | None:
         elif phase is None:
             fallback = text.strip()
     return fallback
+
+
+def telegram_images_from_message(text: str) -> tuple[str, tuple[str, ...]]:
+    """Remove bounded image-delivery markers from a completed agent message."""
+
+    paths: list[str] = []
+
+    def remove_marker(match: re.Match[str]) -> str:
+        path = match.group(1).strip()
+        if path and len(paths) < MAX_TELEGRAM_IMAGES_PER_TURN:
+            paths.append(path)
+        return ""
+
+    visible = _TELEGRAM_IMAGE_RE.sub(remove_marker, text).strip()
+    return visible or "Here’s the image.", tuple(paths)
 
 
 def translate_codex_error(exc: BaseException) -> CodexBackendError:
@@ -391,7 +422,7 @@ class CodexBackend:
         default_cwd: Path,
         on_status: StatusCallback | None = None,
         on_approval: ApprovalCallback | None = None,
-    ) -> str:
+    ) -> CodexTurnResult:
         session = self.sessions.get(user_id)
         if session is None:
             session = await self.new_session(user_id, default_cwd)
@@ -448,4 +479,5 @@ class CodexBackend:
         response = final_message_from_items(completed_items)
         if response is None:
             raise CodexBackendError("Codex finished without returning a response. Please try again.")
-        return response
+        visible_text, image_paths = telegram_images_from_message(response)
+        return CodexTurnResult(text=visible_text, cwd=session.cwd, image_paths=image_paths)

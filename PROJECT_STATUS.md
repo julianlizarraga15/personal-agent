@@ -12,7 +12,7 @@ Last updated: 2026-08-01
 - System Bubblewrap now runs under a narrow Moby-derived seccomp profile, fixing the Docker namespace failure without added capabilities, privileged mode, or unconfined security settings. The image also includes pinned `uv`.
 - A sanitized launcher prevents Codex from inheriting bot/API/Git/proxy secrets. Sandboxed commands cannot read `/codex-home`, `/trace-state`, or workspace `.env` files.
 - Network is denied by default. Exact public HTTPS port-443 requests can be allowed once by the configured Telegram owner; requests expire after five minutes and are cancelled by `/new`, `/project`, and `/stop`. All other escalation fails closed.
-- Codex mode is text-only and registers `/project`, `/new`, `/stop`, and `/help`. It debounces one coarse activity message and renders the completed agent message through the existing Markdown renderer.
+- Codex mode accepts text and registers `/project`, `/new`, `/stop`, and `/help`. It debounces one coarse activity message, renders the completed agent message through the existing Markdown renderer, and can return up to four requested workspace images after path containment, protected-path, size, and real-format validation. Incoming media remains unsupported.
 - `/new` resets to the workspace root, `/project` validates beneath it and starts fresh, and `/stop` interrupts and discards an active session. Restart loses conversations but preserves ChatGPT authentication in the private `codex-state` volume.
 - The bot service no longer receives the Docker socket, Git SSH key, Git SSH command, OpenAI API key, or deployment queue. Pass-1 deployment is manual.
 - The optional deployer is disabled by default, has no restart policy, and stores control state in a deployer-only volume. It rejects any commit that does not equal the configured published HTTPS remote ref and a clean local `HEAD`.
@@ -71,7 +71,7 @@ Last updated: 2026-08-01
 
 - Keep changes focused and preserve user changes.
 - Do not expose secrets or weaken the isolation boundary.
-- Text-only support, plain Codex behavior, ephemeral conversations, coarse progress, and manual deployment are intentional for pass 1.
+- Text input, bounded owner-requested output images, plain Codex behavior, ephemeral conversations, coarse progress, and manual deployment are intentional for pass 1; incoming media remains deferred.
 - Codex uses the signed-in ChatGPT subscription and included limits, not API billing. `CODEX_HOME` persists only its authentication and configuration.
 - Codex may edit the selected workspace automatically. Only exact public HTTPS port-443 network access can prompt the Telegram owner; all other escalation is denied.
 - The statements below describe the dormant Responses implementation rather than the default backend.
@@ -88,8 +88,8 @@ Last updated: 2026-08-01
 
 ## Validation
 
-- All 174 Python tests pass; two host-local socket cases skip because the outer sandbox rejects Unix binds. API-Football coverage includes fixed-host authentication injection, proxy independence, secret redaction, endpoint/parameter validation, traversal and URL rejection, response bounds, timeouts, upstream errors, atomic concurrent quota updates, missing-key behavior, socket cleanup, MCP discovery/calls/errors, and startup failure cleanup. The real socket protocol and app-server/MCP boundary pass inside disposable built-image tests.
-- Current validation: all 174 tests pass via `python -m pytest`; `git diff --check`, Compose validation, and seccomp JSON validation pass.
+- All 178 Python tests pass; two host-local socket cases skip because the outer sandbox rejects Unix binds. API-Football coverage includes fixed-host authentication injection, proxy independence, secret redaction, endpoint/parameter validation, traversal and URL rejection, response bounds, timeouts, upstream errors, atomic concurrent quota updates, missing-key behavior, socket cleanup, MCP discovery/calls/errors, and startup failure cleanup. Outgoing Codex image coverage includes marker extraction, project containment, real-format validation, photo delivery, and document fallback. The real socket protocol and app-server/MCP boundary pass inside disposable built-image tests.
+- Current validation: 178 tests pass and two skip via `python -m pytest`; `git diff --check` and Compose validation pass. The updated `personal-agent-bot:latest` image builds successfully.
 - The production API-Football status request succeeds, returned JSON contains no credential, and the sanitized Codex/MCP environment does not inherit `API_FOOTBALL_KEY`. The Argentine Primera División MCP query completes without network approval and reports the plan-specific standings limitation. Three of 100 requests were consumed on 2026-08-01 UTC; the owner-only gateway socket remains mode `0600`.
 - The bot image builds with pinned `openai-codex==0.144.4`, system Bubblewrap, and `uv==0.11.32`. Docker accepts the custom seccomp profile and successfully creates the inner Bubblewrap sandbox.
 - Container smoke tests verify workspace write access and deny inherited Telegram secrets, `/codex-home` authentication reads, `/trace-state` reads, outside-workspace writes, direct shell networking, and Docker access.

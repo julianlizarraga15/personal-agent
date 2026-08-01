@@ -29,7 +29,13 @@ from telegram.error import BadRequest
 
 from agent import Agent, AgentSession, ImageInput, ProjectContext, prompt_export
 from api_football import ApiFootballGateway
-from codex_backend import CodexBackend, CodexBackendError, CodexTurnDiscarded, NetworkApprovalRequest
+from codex_backend import (
+    CodexBackend,
+    CodexBackendError,
+    CodexTurnDiscarded,
+    CodexTurnResult,
+    NetworkApprovalRequest,
+)
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
@@ -52,6 +58,7 @@ STATUS_MESSAGES = {
 
 DEFAULT_IMAGE_PROMPT = "Describe this image and call out any visible text, errors, or actionable details."
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_OUTPUT_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_AUDIO_BYTES = 20_000_000
 DEFAULT_MAX_AUDIO_SECONDS = 600
 DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
@@ -685,7 +692,8 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text(
         "Chat normally to work with Codex in the configured workspace.\n"
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
-        "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. Images and audio are not supported in pass 1."
+        "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. "
+        "Codex can send images it creates in the selected workspace; incoming images and audio are not supported yet."
     )
 
 
@@ -753,7 +761,13 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
         await message.reply_text(exc.user_message)
         final_status = "Codex failed."
     else:
-        await _reply_agent_response(message, response)
+        await _reply_agent_response(message, response.text)
+        failed_images = await _reply_codex_images(message, response)
+        if failed_images:
+            await message.reply_text(
+                "I completed the request, but couldn’t attach one or more images. "
+                "The image must be a valid PNG, JPEG, WEBP, or static GIF inside the selected project and within the size limit."
+            )
         final_status = "Completed."
     editor = getattr(activity_message, "edit_text", None)
     if editor is not None:
@@ -761,6 +775,54 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
             await editor(final_status)
         except Exception:
             LOGGER.warning("Final Codex activity update failed user_id=%s", user.id)
+
+
+def _max_output_image_bytes() -> int:
+    return _positive_env_int("TELEGRAM_MAX_OUTPUT_IMAGE_BYTES", DEFAULT_MAX_OUTPUT_IMAGE_BYTES)
+
+
+def _codex_image_bytes(cwd: Path, requested_path: str) -> tuple[BytesIO, str]:
+    """Open one verified image without allowing delivery outside the selected project."""
+
+    root = cwd.resolve()
+    candidate = Path(requested_path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        raise ValueError("image path is outside the selected project")
+    if any(part == ".env" or part.startswith(".env.") for part in resolved.parts):
+        raise ValueError("protected environment path")
+    max_bytes = _max_output_image_bytes()
+    if resolved.stat().st_size > max_bytes:
+        raise ValueError("image exceeds output size limit")
+    data = resolved.read_bytes()
+    if len(data) > max_bytes:
+        raise ValueError("image exceeds output size limit")
+    media_type = _validate_image(data)
+    image = BytesIO(data)
+    image.name = resolved.name
+    return image, media_type
+
+
+async def _reply_codex_images(message: object, result: CodexTurnResult) -> int:
+    """Deliver verified Codex-created images, returning the failure count."""
+
+    failures = 0
+    for requested_path in result.image_paths:
+        try:
+            image, media_type = _codex_image_bytes(result.cwd, requested_path)
+            if media_type in {"image/png", "image/jpeg", "image/webp"}:
+                try:
+                    await message.reply_photo(photo=image)  # type: ignore[attr-defined]
+                    continue
+                except Exception:
+                    image.seek(0)
+            await message.reply_document(document=image, filename=image.name)  # type: ignore[attr-defined]
+        except Exception as exc:
+            failures += 1
+            LOGGER.warning("Codex image delivery failed error_type=%s", type(exc).__name__)
+    return failures
 
 
 async def run_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

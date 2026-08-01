@@ -74,6 +74,8 @@ Now add tests for that validation
 
 Agent replies use the existing safe Telegram Markdown renderer. A single debounced activity message reports coarse thinking, command, and file-change progress.
 
+When you ask Codex to create and send a plot or other image, it can attach up to four PNG, JPEG, WEBP, or static GIF files from the selected project. The bot resolves each requested path beneath the active project, rejects protected `.env` paths, verifies the actual image content, and limits each attachment to 10 MiB by default (`TELEGRAM_MAX_OUTPUT_IMAGE_BYTES`). PNG, JPEG, and WEBP are sent as photos with a document fallback; static GIFs are sent as documents. Incoming images and audio remain unavailable in Codex mode.
+
 If a turn needs to download declared dependencies, review the displayed hostname and approve only when it matches the task. The approval does not authorize a different host, later turn, non-HTTPS connection, shell escape, or broader filesystem access.
 
 ### Dormant Responses rollback
