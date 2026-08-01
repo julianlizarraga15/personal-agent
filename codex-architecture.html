@@ -409,14 +409,14 @@
       <section class="section" aria-labelledby="normal-turn">
         <div class="section-head">
           <div><div class="kicker">01 · Normal operation</div><h2 id="normal-turn">One message, one direct path</h2></div>
-          <p class="section-note">There is no router, model ladder, media pipeline, or Docker control. One small approval broker handles exact HTTPS destinations only.</p>
+          <p class="section-note">There is no router, model ladder, incoming-media pipeline, or Docker control. One small approval broker handles exact HTTPS destinations only.</p>
         </div>
 
         <div class="flow">
           <article class="node">
             <div class="icon">TG</div>
             <h3>You in Telegram</h3>
-            <p>Text plus four commands: <code>/project</code>, <code>/new</code>, <code>/stop</code>, and <code>/help</code>.</p>
+            <p>Send text plus four commands: <code>/project</code>, <code>/new</code>, <code>/stop</code>, and <code>/help</code>. Receive formatted replies and requested project images.</p>
           </article>
 
           <div class="arrow" aria-hidden="true"><span>text</span></div>
@@ -426,7 +426,7 @@
             <h3>Bot container</h3>
             <p>A thin Telegram adapter owns one ephemeral Codex thread per user.</p>
             <div class="mini-stack">
-              <div><span>Telegram handler</span><code>TEXT ONLY</code></div>
+              <div><span>Telegram handler</span><code>TEXT IN · IMAGE OUT</code></div>
               <div><span>Official Python SDK</span><code>0.144.4</code></div>
               <div><span>Codex app-server</span><code>SAME CONTAINER</code></div>
               <div><span>Bubblewrap + uv</span><code>SANDBOXED</code></div>
@@ -486,6 +486,7 @@
               <li>Request one exact HTTPS destination with owner buttons</li>
               <li>Continue a thread across Telegram messages</li>
               <li>Report progress and return formatted answers</li>
+              <li>Return up to four verified images from the selected project</li>
             </ul>
           </article>
           <article class="permission no">
@@ -498,6 +499,7 @@
               <li>No writes outside the workspace sandbox</li>
               <li>No other private/local or unapproved shell networking</li>
               <li>No reads of Codex auth, trace state, or <code>.env</code></li>
+              <li>No incoming image or audio handling in Codex mode</li>
             </ul>
           </article>
         </div>
@@ -535,7 +537,7 @@
 
     <footer>
       <span>Personal Agent · Codex architecture</span>
-      <span>Ephemeral threads · Scoped HTTPS approval · Manual deployment</span>
+      <span>Ephemeral threads · Verified image delivery · Manual deployment</span>
     </footer>
   </div>
 </body>

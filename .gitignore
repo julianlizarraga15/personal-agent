@@ -5,5 +5,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 secrets/
-/workspace/personal-agent/
-/workspace/.personal-agent-state/
+/workspace/
