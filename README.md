@@ -37,7 +37,7 @@ The image includes Git but expects the Codex CLI and its authentication to be su
 
 ## Telegram usage with Docker Compose
 
-The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. It does not need an OpenAI API key. The bot has a writable `workspace/` mount, but no Docker socket, SSH key, Git push credential, or deployment queue.
+The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. It does not need an OpenAI API key. The bot has a writable `workspace/` mount, but no Docker socket or deployment queue. Optional Git publication keeps one repository-scoped deploy key behind a bot-side gateway; the Codex command sandbox never receives it.
 
 Create `.env`, build the image, and perform the one-time device login. The `codex-state` volume preserves authentication and Codex configuration across container replacement.
 
@@ -53,11 +53,35 @@ Open the printed verification URL, enter its code, and wait for the command to r
 
 The bot accepts only `TELEGRAM_ALLOWED_USER_ID`. Ordinary text starts an ephemeral Codex thread in the workspace root. `/project <directory>` validates a directory beneath that root and starts a fresh thread there; `/new` starts fresh at the root; `/stop` interrupts the active turn and discards the session; `/help` lists the same pass-1 surface. One turn may run per user. Restarting the bot forgets every thread but preserves login state. The image includes `uv` for Python project setup.
 
-Threads use a named Codex permissions profile derived from `:workspace`. Codex may edit and run commands in the selected workspace automatically. Public network destinations are blocked by default; when Codex encounters one exact public HTTPS destination on port 443, Telegram shows owner-only **Allow once** and **Reject** buttons. Grants last only for the active turn and expire after five minutes. `/stop`, `/new`, and `/project` reject pending requests. All file-change escalation, access outside the workspace, other private/local network destinations, Docker access, and credential-backed Git publication remain unapprovable.
+Threads use a named Codex permissions profile derived from `:workspace`. Codex may edit and run commands in the selected workspace automatically. Public network destinations are blocked by default; when Codex encounters one exact public HTTPS destination on port 443, Telegram shows owner-only **Allow once** and **Reject** buttons. Grants last only for the active turn and expire after five minutes. `/stop`, `/new`, and `/project` reject pending requests. All file-change escalation, access outside the workspace, other private/local network destinations, and Docker access remain unapprovable. Optional Git publication uses a separate exact-commit approval and credential boundary described below.
 
 When the optional `API_FOOTBALL_KEY` from the API-Sports dashboard is set in the private host `.env`, Codex can query approved read-only football analytics through the API-Football MCP `get` tool. Its keyless stdio adapter talks only to `/run/api-football.sock`; the in-process bot gateway fixes the upstream origin to `https://v3.football.api-sports.io`, verifies TLS, injects `x-apisports-key`, ignores proxy environment variables, and never gives the key to Codex. Project shell networking remains disabled. The packaged `api-football endpoints`, `api-football --help`, and `api-football get ...` commands are for trusted container diagnostics, not sandbox tasks. Odds, bookmakers, predictions, full URLs, non-GET requests, and unknown endpoints are rejected. A protected atomic counter in `trace-state` allows at most 100 attempted upstream calls per UTC day; invalid local requests do not count, and there is no response cache. Without a configured key the bot remains healthy and the tool reports that API-Football is not configured.
 
-The bot image uses system Bubblewrap with a narrow seccomp profile rather than privileged mode, `SYS_ADMIN`, or an unconfined container. A clean launcher prevents Codex commands from inheriting Telegram, OpenAI, Git, or proxy credentials. The command sandbox cannot read `/codex-home`, `/trace-state`, or workspace `.env` files. The Compose bot still has no Docker socket or Git credentials.
+The bot image uses system Bubblewrap with a narrow seccomp profile rather than privileged mode, `SYS_ADMIN`, or an unconfined container. A clean launcher prevents Codex commands from inheriting Telegram, OpenAI, Git, or proxy credentials. The command sandbox cannot read `/codex-home`, `/trace-state`, `/git-publish-secrets`, or workspace `.env` files. The Compose bot still has no Docker socket.
+
+### Repository-scoped Git publication
+
+To let Codex push `mental-models`, clone it beneath the configured host workspace as `mental-models`, then create a dedicated Ed25519 deploy key in a private directory outside that workspace. Add only its public key to the GitHub repository under **Settings → Deploy keys** and enable write access. Put the private key at `deploy-key` and a verified GitHub SSH host-key file at `known_hosts` in the private directory; both should be owner-readable only.
+
+Set these private host `.env` values:
+
+```dotenv
+GIT_PUBLISH_REPOSITORY=/workspace/mental-models
+GIT_PUBLISH_REMOTE=git@github.com:julianlizarraga15/mental-models.git
+GIT_PUBLISH_BRANCH=main
+GIT_PUBLISH_SECRETS_DIR=/absolute/path/to/mental-models-publish-secrets
+```
+
+Copy `docker-compose.git-publish.example.yml` to the ignored local file `docker-compose.git-publish.yml`, then include it whenever managing the bot:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.git-publish.yml build bot
+docker compose -f docker-compose.yml -f docker-compose.git-publish.yml up -d bot
+```
+
+After `/project mental-models`, ask Codex to commit and publish. The gateway requires a clean worktree, displays the fixed remote, branch, and full commit ID in Telegram, and pushes only after **Publish once**. It never force-pushes. Missing key/configuration leaves the bot healthy and causes the tool to return a setup error.
+
+Project-controlled Git configuration and attributes are treated as untrusted. Repository inspection and bundle creation run inside a networkless, read-only Bubblewrap that masks the deploy key and other protected state. After approval, the gateway imports that bounded bundle into a fresh bare repository and gives only that clean repository access to the one deploy key for the exact non-force push.
 
 To select a project and work across continued turns:
 

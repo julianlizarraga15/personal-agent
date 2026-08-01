@@ -37,6 +37,7 @@ from codex_backend import (
     NetworkApprovalRequest,
 )
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
+from git_publish import GitPublishApproval, GitPublishGateway
 from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 
@@ -45,6 +46,7 @@ LOGGER = logging.getLogger(__name__)
 CODEX_BACKEND_KEY = "codex_backend"
 CODEX_APPROVALS_KEY = "codex_approvals"
 API_FOOTBALL_GATEWAY_KEY = "api_football_gateway"
+GIT_PUBLISH_GATEWAY_KEY = "git_publish_gateway"
 CODEX_STATUS_DEBOUNCE_SECONDS = 1.5
 CODEX_APPROVAL_TIMEOUT_SECONDS = 300
 
@@ -333,6 +335,49 @@ class CodexApprovalBroker:
                         await editor(f"{result}\nDestination: {request.destination}")
                     except Exception:
                         LOGGER.debug("Codex approval prompt finalization failed", exc_info=True)
+        return approved
+
+    async def request_publish(self, message: object, user_id: int, request: GitPublishApproval) -> bool:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        token = secrets.token_hex(8)
+        future = asyncio.get_running_loop().create_future()
+        pending = CodexPendingApproval(token, user_id, request.destination, future)
+        self.pending[token] = pending
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Publish once", callback_data=f"codex-publish:{token}:allow"),
+                InlineKeyboardButton("Reject", callback_data=f"codex-publish:{token}:reject"),
+            ]]
+        )
+        prompt = (
+            "Codex wants to publish one exact commit.\n"
+            f"Repository: {request.remote}\n"
+            f"Branch: {request.branch}\n"
+            f"Commit: {request.commit}\n"
+            "Approval applies only to this commit and destination. The deploy key remains unavailable to Codex."
+        )
+        result = "Publication rejected."
+        try:
+            pending.prompt_message = await message.reply_text(prompt, reply_markup=keyboard)  # type: ignore[attr-defined]
+            approved = await asyncio.wait_for(asyncio.shield(future), CODEX_APPROVAL_TIMEOUT_SECONDS)
+            result = "Publication approved once." if approved else "Publication rejected."
+        except TimeoutError:
+            approved = False
+            result = "Publication approval expired."
+        except Exception:
+            LOGGER.warning("Codex publication approval failed user_id=%s", user_id, exc_info=True)
+            approved = False
+            result = "Publication rejected."
+        finally:
+            self.pending.pop(token, None)
+            if pending.prompt_message is not None:
+                editor = getattr(pending.prompt_message, "edit_text", None)
+                if editor is not None:
+                    try:
+                        await editor(f"{result}\nDestination: {request.destination}")
+                    except Exception:
+                        LOGGER.debug("Codex publication approval finalization failed", exc_info=True)
         return approved
 
     def resolve(self, token: str, user_id: int, approved: bool) -> bool:
@@ -630,6 +675,14 @@ def _codex_approvals(context: object) -> CodexApprovalBroker:
     return bot_data[CODEX_APPROVALS_KEY]
 
 
+def _git_publish_gateway(context: object) -> GitPublishGateway:
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", None)
+    if not isinstance(bot_data, dict) or GIT_PUBLISH_GATEWAY_KEY not in bot_data:
+        raise RuntimeError("Git publication gateway is not initialized")
+    return bot_data[GIT_PUBLISH_GATEWAY_KEY]
+
+
 def _workspace_root() -> Path:
     return Path(os.environ.get("AGENT_WORKSPACE_ROOT", "/workspace")).resolve()
 
@@ -693,6 +746,7 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Chat normally to work with Codex in the configured workspace.\n"
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
         "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. "
+        "A configured project may also be published as one exact clean commit after a separate approval. "
         "Codex can send images it creates in the selected workspace; incoming images and audio are not supported yet."
     )
 
@@ -704,12 +758,15 @@ async def codex_network_approval(update: Update, context: ContextTypes.DEFAULT_T
         return
     data = query.data or ""
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] != "codex-net" or parts[2] not in {"allow", "reject"}:
+    if len(parts) != 3 or parts[0] not in {"codex-net", "codex-publish"} or parts[2] not in {"allow", "reject"}:
         await query.answer("This approval is invalid.", show_alert=True)
         return
     resolved = _codex_approvals(context).resolve(parts[1], user.id, parts[2] == "allow")
     if resolved:
-        await query.answer("Allowed once." if parts[2] == "allow" else "Rejected.")
+        if parts[0] == "codex-publish" and parts[2] == "allow":
+            await query.answer("Publication approved once.")
+        else:
+            await query.answer("Allowed once." if parts[2] == "allow" else "Rejected.")
     else:
         await query.answer("This approval has expired.", show_alert=True)
 
@@ -747,6 +804,10 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
         except Exception:
             LOGGER.warning("Codex activity update failed user_id=%s", user.id)
 
+    publish_gateway = _git_publish_gateway(context)
+    publish_lease = publish_gateway.bind_approval(
+        lambda request: _codex_approvals(context).request_publish(message, user.id, request)
+    )
     try:
         response = await _codex_backend(context).run_turn(
             user.id,
@@ -769,6 +830,8 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
                 "The image must be a valid PNG, JPEG, WEBP, or static GIF inside the selected project and within the size limit."
             )
         final_status = "Completed."
+    finally:
+        publish_gateway.unbind_approval(publish_lease)
     editor = getattr(activity_message, "edit_text", None)
     if editor is not None:
         try:
@@ -1707,11 +1770,18 @@ async def start_codex_application(application: object) -> None:
     from telegram import BotCommand
 
     gateway = application.bot_data[API_FOOTBALL_GATEWAY_KEY]  # type: ignore[attr-defined]
+    publish_gateway = application.bot_data[GIT_PUBLISH_GATEWAY_KEY]  # type: ignore[attr-defined]
     await gateway.start()
+    try:
+        await publish_gateway.start()
+    except Exception:
+        await gateway.close()
+        raise
     backend = application.bot_data[CODEX_BACKEND_KEY]  # type: ignore[attr-defined]
     try:
         await backend.start()
     except Exception:
+        await publish_gateway.close()
         await gateway.close()
         raise
     await application.bot.set_my_commands(  # type: ignore[attr-defined]
@@ -1730,6 +1800,7 @@ async def stop_codex_application(application: object) -> None:
     for pending in tuple(broker.pending.values()):
         broker.cancel_user(pending.user_id)
     await application.bot_data[CODEX_BACKEND_KEY].close()  # type: ignore[attr-defined]
+    await application.bot_data[GIT_PUBLISH_GATEWAY_KEY].close()  # type: ignore[attr-defined]
     await application.bot_data[API_FOOTBALL_GATEWAY_KEY].close()  # type: ignore[attr-defined]
 
 
@@ -1756,11 +1827,20 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
         application.bot_data[API_FOOTBALL_GATEWAY_KEY] = ApiFootballGateway(
             source.get("API_FOOTBALL_KEY")
         )
+        application.bot_data[GIT_PUBLISH_GATEWAY_KEY] = GitPublishGateway(
+            source.get("GIT_PUBLISH_REPOSITORY"),
+            source.get("GIT_PUBLISH_REMOTE"),
+            source.get("GIT_PUBLISH_BRANCH", "main"),
+            workspace=source.get("AGENT_WORKSPACE_ROOT", "/workspace"),
+            secrets_root=source.get("GIT_PUBLISH_SECRETS_ROOT", "/git-publish-secrets"),
+            key_path=source.get("GIT_PUBLISH_KEY_PATH", "/git-publish-secrets/deploy-key"),
+            known_hosts_path=source.get("GIT_PUBLISH_KNOWN_HOSTS_PATH", "/git-publish-secrets/known_hosts"),
+        )
         application.add_handler(CommandHandler("project", codex_select_project))
         application.add_handler(CommandHandler("new", codex_new_session))
         application.add_handler(CommandHandler("stop", codex_stop_session))
         application.add_handler(CommandHandler(["help", "start"], codex_help_command))
-        application.add_handler(CallbackQueryHandler(codex_network_approval, pattern=r"^codex-net:"))
+        application.add_handler(CallbackQueryHandler(codex_network_approval, pattern=r"^codex-(?:net|publish):"))
         media_filter = filters.PHOTO | filters.Document.IMAGE | filters.VOICE | filters.AUDIO | filters.Document.AUDIO
         for extension in ("flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "ogg", "wav", "webm"):
             media_filter |= filters.Document.FileExtension(extension)

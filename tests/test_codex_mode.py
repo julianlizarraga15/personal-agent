@@ -59,6 +59,8 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("GIT_SSH_COMMAND", bot)
         self.assertNotIn("OPENAI_API_KEY", bot)
         self.assertIn("API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}", bot)
+        self.assertIn("GIT_PUBLISH_REPOSITORY: ${GIT_PUBLISH_REPOSITORY:-}", bot)
+        self.assertNotIn("deploy-key", bot.split("volumes:", 1)[1] if "volumes:" in bot else "")
         self.assertNotIn("DEPLOYMENT_STATE_DIR", bot)
         self.assertIn("seccomp=./security/codex-bwrap-seccomp.json", bot)
         self.assertIn("trace-state:/trace-state", bot)
@@ -70,6 +72,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("dangerously_allow_all_unix_sockets", backend)
         self.assertNotIn("network.unix_sockets", backend)
         self.assertIn("api-football-mcp", backend)
+        self.assertIn("git-publish-mcp", backend)
         self.assertIn("network.enabled=false", backend)
 
         deployer = compose.split("  deployer:", 1)[1].split("  codex-login:", 1)[0]
@@ -89,10 +92,15 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
             start=AsyncMock(side_effect=lambda: order.append("gateway-start")),
             close=AsyncMock(side_effect=lambda: order.append("gateway-close")),
         )
+        publish_gateway = SimpleNamespace(
+            start=AsyncMock(side_effect=lambda: order.append("publish-start")),
+            close=AsyncMock(side_effect=lambda: order.append("publish-close")),
+        )
         backend = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("failed")))
         application = SimpleNamespace(
             bot_data={
                 telegram_bot.API_FOOTBALL_GATEWAY_KEY: gateway,
+                telegram_bot.GIT_PUBLISH_GATEWAY_KEY: publish_gateway,
                 telegram_bot.CODEX_BACKEND_KEY: backend,
             },
             bot=SimpleNamespace(set_my_commands=AsyncMock()),
@@ -101,7 +109,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "failed"):
             await telegram_bot.start_codex_application(application)
 
-        self.assertEqual(order, ["gateway-start", "gateway-close"])
+        self.assertEqual(order, ["gateway-start", "publish-start", "publish-close", "gateway-close"])
         backend.start.assert_awaited_once()
 
     async def test_network_approval_is_owner_bound_and_one_shot(self):

@@ -409,7 +409,7 @@
       <section class="section" aria-labelledby="normal-turn">
         <div class="section-head">
           <div><div class="kicker">01 · Normal operation</div><h2 id="normal-turn">One message, one direct path</h2></div>
-          <p class="section-note">There is no router, model ladder, incoming-media pipeline, or Docker control. One small approval broker handles exact HTTPS destinations only.</p>
+          <p class="section-note">There is no router, model ladder, incoming-media pipeline, or Docker control. Narrow approval paths handle exact HTTPS destinations and exact-commit publication.</p>
         </div>
 
         <div class="flow">
@@ -430,6 +430,7 @@
               <div><span>Official Python SDK</span><code>0.144.4</code></div>
               <div><span>Codex app-server</span><code>SAME CONTAINER</code></div>
               <div><span>Bubblewrap + uv</span><code>SANDBOXED</code></div>
+              <div><span>Trusted MCP gateways</span><code>DATA · GIT PUSH</code></div>
             </div>
           </article>
 
@@ -471,7 +472,7 @@
       <section class="section" aria-labelledby="boundary">
         <div class="section-head">
           <div><div class="kicker">03 · Security boundary</div><h2 id="boundary">Workspace power, not host power</h2></div>
-          <p class="section-note">A named workspace profile blocks sensitive mounts, direct networking, and Unix sockets. A trusted keyless MCP tool supplies approved analytics; exact public HTTPS still needs owner approval.</p>
+          <p class="section-note">A named workspace profile blocks sensitive mounts, direct networking, and Unix sockets. Trusted keyless MCP tools supply approved analytics and exact-commit publication without exposing credentials.</p>
         </div>
 
         <div class="split">
@@ -484,6 +485,7 @@
               <li>Use <code>uv</code> to create and manage Python projects</li>
               <li>Query approved analytics through the API-Football MCP tool</li>
               <li>Request one exact HTTPS destination with owner buttons</li>
+              <li>Publish one configured clean commit after owner approval</li>
               <li>Continue a thread across Telegram messages</li>
               <li>Report progress and return formatted answers</li>
               <li>Return up to four verified images from the selected project</li>
@@ -494,7 +496,7 @@
             <p>The credentials or mounts needed to control the host.</p>
             <ul>
               <li>No Docker socket or deployment queue</li>
-              <li>No SSH key or Git push credential</li>
+              <li>No direct SSH key or general Git push credential</li>
               <li>No OpenAI or API-Football API key</li>
               <li>No writes outside the workspace sandbox</li>
               <li>No other private/local or unapproved shell networking</li>
@@ -537,7 +539,7 @@
 
     <footer>
       <span>Personal Agent · Codex architecture</span>
-      <span>Ephemeral threads · Verified image delivery · Manual deployment</span>
+      <span>Ephemeral threads · Scoped network + Git approval · Manual deployment</span>
     </footer>
   </div>
 </body>

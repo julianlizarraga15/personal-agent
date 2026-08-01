@@ -1,5 +1,6 @@
 .env
 secrets/
+docker-compose.git-publish.yml
 .venv/
 __pycache__/
 *.py[cod]

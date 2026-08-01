@@ -1,0 +1,7 @@
+services:
+  bot:
+    volumes:
+      - type: bind
+        source: ${GIT_PUBLISH_SECRETS_DIR:?GIT_PUBLISH_SECRETS_DIR is required}
+        target: /git-publish-secrets
+        read_only: true
