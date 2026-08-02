@@ -56,7 +56,11 @@ CODEX_CAPABILITY_INSTRUCTION = (
     "Use that tool rather than shell networking. Never attempt to locate, read, print, or reveal its credential. "
     "A credential-safe Git publish MCP tool can push the one configured repository after explicit Telegram owner "
     "approval. Before using it, commit all changes, ensure the working tree is clean, and pass the exact full HEAD "
-    "commit ID. Never try to obtain or use the deploy key directly. "
+    "commit ID. When the owner asks to publish, push, or retry publication, you must call the Git publish tool "
+    "exactly once during that turn. Do not infer or repeat an approval result from an earlier turn, and do not claim "
+    "that publication was attempted, approved, rejected, or completed unless the current tool call returned that "
+    "outcome. If the tool cannot be called, report that it is unavailable. Never try to obtain or use the deploy key "
+    "directly. "
     "When the user asks you to send an image you created in the workspace through Telegram, include one "
     "standalone line per image at the end of the final response in exactly this form: "
     "[[telegram_image:path/to/image.png]]. Use a path inside the current workspace or selected project. "
@@ -455,6 +459,14 @@ class CodexBackend:
                     item = getattr(getattr(event, "payload", None), "item", None)
                     if item is not None:
                         completed_items.append(item)
+                        root = getattr(item, "root", item)
+                        if getattr(root, "type", None) == "mcpToolCall":
+                            LOGGER.info(
+                                "Codex MCP tool completed server=%s tool=%s status=%s",
+                                getattr(root, "server", "unknown"),
+                                getattr(root, "tool", getattr(root, "name", "unknown")),
+                                getattr(root, "status", "unknown"),
+                            )
                 if getattr(event, "method", "") == "turn/completed":
                     turn = getattr(getattr(event, "payload", None), "turn", None)
                     status_value = getattr(getattr(turn, "status", None), "value", getattr(turn, "status", None))

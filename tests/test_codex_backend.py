@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from codex_backend import (
+    CODEX_CAPABILITY_INSTRUCTION,
     CodexBackend,
     CodexBackendError,
     CodexBusyError,
@@ -75,6 +76,11 @@ def successful_handle(text):
 
 
 class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
+    def test_publication_instruction_requires_a_fresh_tool_result(self):
+        self.assertIn("must call the Git publish tool exactly once", CODEX_CAPABILITY_INSTRUCTION)
+        self.assertIn("Do not infer or repeat an approval result", CODEX_CAPABILITY_INSTRUCTION)
+        self.assertIn("unless the current tool call returned", CODEX_CAPABILITY_INSTRUCTION)
+
     async def test_one_client_starts_and_closes_once(self):
         client = FakeClient([])
         backend = CodexBackend(client)
