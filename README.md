@@ -81,6 +81,8 @@ docker compose -f docker-compose.yml -f docker-compose.git-publish.yml up -d bot
 
 After `/project mental-models`, ask Codex to commit and publish. The gateway requires a clean worktree, displays the fixed remote, branch, and full commit ID in Telegram, and pushes only after **Publish once**. It never force-pushes. Missing key/configuration leaves the bot healthy and causes the tool to return a setup error.
 
+Publication has one deliberate approval point. Codex is configured with `mcp_servers.git-publish.tools.publish.approval_mode="approve"` so its generic MCP write-tool reviewer does not reject the call before it reaches the application. This does not approve a Git push: the keyless MCP adapter can only ask the bot-side gateway, which sends the exact commit and destination directly to the owner chat and waits up to five minutes for **Publish once**. A request is rejected if that card cannot be delivered, expires, or is rejected. Operational logs record MCP completion plus approval delivery and outcome without logging message contents or credentials.
+
 Project-controlled Git configuration and attributes are treated as untrusted. Repository inspection and bundle creation run inside a networkless, read-only Bubblewrap that masks the deploy key and other protected state. After approval, the gateway imports that bounded bundle into a fresh bare repository and gives only that clean repository access to the one deploy key for the exact non-force push.
 
 To select a project and work across continued turns:
