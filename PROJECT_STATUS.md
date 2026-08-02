@@ -22,7 +22,7 @@ Last updated: 2026-08-02
 
 ## Last stopping point
 
-- `main` and `origin/main` are at `14def2b` before the Codex audio changes are committed and published.
+- The Codex audio implementation, tests, configuration example, and documentation are committed and published directly to `main`.
 - The live `personal-agent-bot-1` runs image `sha256:90d5e04919a314a90e0b25cd215d326efac9308ce9fd8262f772ce88fc5d79da`; it is healthy with zero restarts, uses the existing Codex authentication volume, and has `/openai-transcription-secrets` mounted read-only. An accidentally created second Compose project was removed, resolving its Telegram polling conflict.
 - The full local suite passes: 197 tests passed and four host-boundary tests skipped. The combined base, Git-publication example, and transcription example Compose configuration also validates.
 
