@@ -6,7 +6,7 @@ An autonomous coding agent controlled through Telegram.
 
 ## Worker responsibilities
 
-- Receive a text task and return text plus requested workspace images (Codex pass 1); the dormant Responses path also supports validated incoming image and transcribed audio turns
+- Receive text or validated audio, submit text to an ephemeral Codex conversation, and return text plus requested workspace images; incoming images remain limited to the dormant Responses path
 - Clone or open a project repository
 - Inspect existing code
 - Run a coding agent
@@ -28,7 +28,9 @@ A second required keyless MCP adapter connects to `/run/git-publish.sock`. Codex
 
 Thread mappings and approvals are never persisted. `CODEX_HOME` is a private volume used by the unsandboxed app-server for authentication and Codex configuration, but is unreadable to sandboxed project commands.
 
-The bot container can write the mounted workspace and includes `uv`, but has no Docker socket, OpenAI API key, or deployment-queue mount. When optional publication is configured, only the bot-side Git gateway can use its one-repository deploy key. The optional deployer is behind the `manual-deployer` Compose profile, has no restart policy, and stores its queue in a named volume mounted only into that service. Before any build, it resolves the configured HTTPS remote ref and requires the request, clean local `HEAD`, and published commit to match exactly. Codex-mode Telegram registration includes text, callback queries, `/project`, `/new`, `/stop`, and `/help`; incoming media and legacy operational commands are unavailable. Requested outgoing images are resolved beneath the selected project, size-capped, decoded as supported static formats, and uploaded only to the authorized owner. Deployment is a manual host operation in pass 1.
+The bot container can write the mounted workspace and includes `uv`, but has no Docker socket, environment-based OpenAI API key, or deployment-queue mount. When optional transcription is configured, the bot alone reads a dedicated key file from `/openai-transcription-secrets`; the mount is denied to the Codex filesystem profile and its path/key are absent from the sanitized launcher environment. Optional publication similarly gives only the bot-side Git gateway its one-repository deploy key. The optional deployer is behind the `manual-deployer` Compose profile, has no restart policy, and stores its queue in a named volume mounted only into that service. Before any build, it resolves the configured HTTPS remote ref and requires the request, clean local `HEAD`, and published commit to match exactly. Codex-mode Telegram registration includes text, supported audio, callback queries, `/project`, `/new`, `/stop`, and `/help`; incoming images and legacy operational commands are unavailable. Requested outgoing images are resolved beneath the selected project, size-capped, decoded as supported static formats, and uploaded only to the authorized owner. Deployment is a manual host operation in pass 1.
+
+Codex audio admission reserves the same per-user turn lock used by SDK execution before Telegram download begins. Declared size and duration are checked before download; actual size and signature are checked afterward. Validated bytes go directly from memory to `gpt-4o-mini-transcribe` (or the configured transcription model) off the event loop. Only the resulting text is submitted to the selected ephemeral Codex thread. A session reset replaces the reservation identity, so a provider response completing afterward is discarded before thread submission. Audio bytes, transcript text, API keys, and raw provider errors are excluded from operational logs.
 
 The previous Responses architecture below is dormant rollback code selected only with `AGENT_BACKEND=responses`.
 

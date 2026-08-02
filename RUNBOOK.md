@@ -2,7 +2,7 @@
 
 ## Start locally
 
-1. Copy `.env.example` to `.env` and fill in the Telegram token and allowed user ID. To enable football analytics, add the API-Sports dashboard value as `API_FOOTBALL_KEY`; never send it through Telegram.
+1. Copy `.env.example` to `.env` and fill in the Telegram token and allowed user ID. To enable football analytics, add the API-Sports dashboard value as `API_FOOTBALL_KEY`; never send it through Telegram. To enable audio, create a dedicated OpenAI Platform key, store it as an owner-readable `api-key` file outside the workspace, set `OPENAI_TRANSCRIPTION_SECRETS_DIR` to its directory, and copy `docker-compose.transcription.example.yml` to the ignored `docker-compose.transcription.yml`.
 2. Build the bot and complete one-time ChatGPT device login:
 
    ```bash
@@ -11,7 +11,7 @@
    ```
 
 3. Start the bot with `docker compose up -d bot`. The Docker-privileged deployer is disabled by default.
-4. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text. Pass 1 is text-only; `/run` and deployment commands are unavailable.
+4. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text or supported voice/audio. `/run` and deployment commands are unavailable.
 
 ## Health checks
 
@@ -20,6 +20,8 @@
 - Inspect `docker compose logs -f bot` while submitting a task.
 - Confirm `/help` lists only `/project`, `/new`, `/stop`, and `/help`.
 - Confirm a normal text turn, continued context, repository read/edit/test work, `/new`, `/project`, `/stop`, progress editing, and Markdown rendering.
+- With the transcription override enabled, confirm one captionless voice note becomes the Codex request and one captioned note applies the caption as its instruction. During a longer transcription, issue `/new` and confirm the old result never enters the fresh conversation.
+- Confirm `/openai-transcription-secrets` is mounted read-only, is denied inside a Codex command, and `OPENAI_API_KEY`, `OPENAI_TRANSCRIPTION_KEY_PATH`, and `OPENAI_TRANSCRIPTION_MODEL` are absent from the sanitized Codex launcher environment. Inspect logs only for content-free success/failure metadata, then confirm usage in the OpenAI dashboard.
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
 - Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
 - Ask Codex to use the API-Football MCP tool for `status`. With a key it should return status JSON without a network approval; without one it should clearly report that API-Football is not configured. Confirm sandboxed commands cannot read the key, `/trace-state`, `.env`, any Unix socket, or direct network. Use `api-football get status` only as a trusted container-side diagnostic.
@@ -33,7 +35,8 @@
 - Sandbox denial: keep the request inside the selected workspace and do not expect an approval prompt.
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the selected project exists under `workspace/` and rebuild after dependency changes.
-- Image/audio rejected: pass 1 accepts text only.
+- Image rejected: incoming images remain unsupported in Codex mode.
+- Audio transcription unavailable: verify the local transcription override is included, the private directory contains a non-empty `api-key`, and the mount is read-only at `/openai-transcription-secrets`. Do not print the key. Missing configuration is non-fatal; provider failures return a stable retry message.
 - Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
 - API-Football unavailable: verify the bot owns `/run/api-football.sock`, the private host `.env` contains the dashboard key, and `/trace-state/api-football-quota.json` is writable. Do not print either file. A missing key is non-fatal; an insecure socket startup or unavailable quota store fails requests safely.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
@@ -45,7 +48,7 @@ Stop services with `docker compose down`. Failed tasks should not publish a bran
 
 ## Manual deployment and Responses rollback
 
-Before building on the trusted host, fetch `origin/main`, require local `HEAD` to match it, and require a clean worktree. Then build and restart the bot; the Telegram process must not publish, rebuild, or restart itself. For emergency Responses rollback, set `AGENT_BACKEND=responses` and inject `OPENAI_API_KEY` through a private local Compose override. Never reconnect the bot to the Docker socket or deployer queue.
+Before building on the trusted host, fetch `origin/main`, require local `HEAD` to match it, and require a clean worktree. Then build and restart the bot with the base Compose file plus the existing Git-publication override and the local transcription override; the Telegram process must not publish, rebuild, or restart itself. For emergency Responses rollback, set `AGENT_BACKEND=responses` and inject `OPENAI_API_KEY` through a separate private local Compose override. Never reconnect the bot to the Docker socket or deployer queue.
 
 ## Optional deployer recovery
 

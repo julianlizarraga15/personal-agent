@@ -32,7 +32,9 @@ from api_football import ApiFootballGateway
 from codex_backend import (
     CodexBackend,
     CodexBackendError,
+    CodexBusyError,
     CodexTurnDiscarded,
+    CodexTurnReservation,
     CodexTurnResult,
     NetworkApprovalRequest,
 )
@@ -64,6 +66,7 @@ DEFAULT_MAX_OUTPUT_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_AUDIO_BYTES = 20_000_000
 DEFAULT_MAX_AUDIO_SECONDS = 600
 DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
+DEFAULT_TRANSCRIPTION_KEY_PATH = "/openai-transcription-secrets/api-key"
 IMAGE_MEDIA_TYPES = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -764,7 +767,9 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
         "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. "
         "A configured project may also be published as one exact clean commit after a separate approval. "
-        "Codex can send images it creates in the selected workspace; incoming images and audio are not supported yet."
+        "Send a voice note or supported audio file to transcribe speech into the current Codex conversation. "
+        "A caption becomes the instruction applied to the transcript. Incoming images remain unsupported; "
+        "Codex can still send images it creates in the selected workspace."
     )
 
 
@@ -794,7 +799,109 @@ async def codex_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = update.effective_message
     if user is None or message is None or not _is_allowed(user.id):
         return
-    await message.reply_text("Images and audio are not supported in pass 1. Please send text instead.")
+    await message.reply_text("Incoming images are not supported in Codex mode. Please send text or audio instead.")
+
+
+async def codex_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Validate and transcribe one owner audio attachment into a reserved Codex turn."""
+
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None or not _is_allowed(user.id):
+        return
+    backend = _codex_backend(context)
+    try:
+        reservation = await backend.reserve_turn(user.id, _workspace_root())
+    except CodexBusyError as exc:
+        await message.reply_text(exc.user_message)
+        return
+
+    try:
+        media = (
+            getattr(message, "voice", None)
+            or getattr(message, "audio", None)
+            or getattr(message, "document", None)
+        )
+        if media is None:
+            return
+        max_bytes = _max_audio_bytes()
+        declared_size = getattr(media, "file_size", None)
+        if isinstance(declared_size, int) and declared_size > max_bytes:
+            await message.reply_text(f"That audio is too large. The limit is {_audio_size_limit_text(max_bytes)}.")
+            return
+        max_seconds = _max_audio_seconds()
+        duration = getattr(media, "duration", None)
+        if isinstance(duration, (int, float)) and duration > max_seconds:
+            await message.reply_text(f"That audio is too long. The limit is {_audio_duration_limit_text(max_seconds)}.")
+            return
+        try:
+            telegram_file = await media.get_file()
+            data = bytes(await telegram_file.download_as_bytearray())
+        except Exception as exc:
+            LOGGER.warning("Codex audio download failed user_id=%s error_type=%s", user.id, type(exc).__name__)
+            await message.reply_text("I couldn’t download that audio from Telegram. Please try sending it again.")
+            return
+        if len(data) > max_bytes:
+            await message.reply_text(f"That audio is too large. The limit is {_audio_size_limit_text(max_bytes)}.")
+            return
+        try:
+            filename, media_type = _validate_audio(data)
+        except ValueError:
+            LOGGER.warning("Codex audio rejected user_id=%s reason=invalid_format", user.id)
+            await message.reply_text(
+                "I couldn’t use that audio. Send a valid OGG, MP3, MP4/M4A, WAV, WebM, or FLAC file within the limits."
+            )
+            return
+        activity_message = await message.reply_text("Transcribing audio…")
+        model = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
+        try:
+            client = _codex_transcription_client()
+        except (OSError, ValueError):
+            LOGGER.warning("Codex audio transcription unavailable reason=configuration")
+            await message.reply_text(
+                "Audio transcription isn’t configured. Mount a dedicated OpenAI Platform API key and try again."
+            )
+            await _edit_codex_activity(activity_message, "Transcription unavailable.", user.id)
+            return
+        try:
+            transcription = await asyncio.to_thread(
+                _transcribe_audio,
+                client,
+                AudioInput(data, filename, media_type),
+                model,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Codex audio transcription failed user_id=%s model=%s error_type=%s",
+                user.id,
+                model,
+                type(exc).__name__,
+            )
+            await message.reply_text("I couldn’t transcribe that audio. Please try again.")
+            await _edit_codex_activity(activity_message, "Transcription failed.", user.id)
+            return
+        transcript = str(getattr(transcription, "text", "") or "").strip()
+        if not transcript:
+            LOGGER.info("Codex audio transcription empty user_id=%s model=%s", user.id, model)
+            await message.reply_text("I couldn’t detect any speech in that audio.")
+            await _edit_codex_activity(activity_message, "No speech detected.", user.id)
+            return
+        LOGGER.info("Codex audio transcription completed user_id=%s model=%s", user.id, model)
+        if backend.sessions.get(user.id) is not reservation.session:
+            LOGGER.info("Codex audio transcription discarded user_id=%s reason=session_replaced", user.id)
+            await _edit_codex_activity(activity_message, "Discarded after session reset.", user.id)
+            return
+        await _edit_codex_activity(activity_message, "Starting Codex…", user.id)
+        await _run_codex_turn(
+            message,
+            context,
+            user.id,
+            _audio_task((getattr(message, "caption", None) or "").strip(), transcript),
+            activity_message=activity_message,
+            reservation=reservation,
+        )
+    finally:
+        backend.release_turn(reservation)
 
 
 async def codex_conversational_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -803,6 +910,29 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
     if user is None or message is None or not _is_allowed(user.id):
         return
     activity_message = await message.reply_text("Starting Codex…")
+    await _run_codex_turn(message, context, user.id, message.text or "", activity_message=activity_message)
+
+
+async def _edit_codex_activity(activity_message: object, status: str, user_id: int) -> None:
+    editor = getattr(activity_message, "edit_text", None)
+    if editor is not None:
+        try:
+            await editor(status)
+        except Exception:
+            LOGGER.warning("Codex activity update failed user_id=%s", user_id)
+
+
+async def _run_codex_turn(
+    message: object,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    text: str,
+    *,
+    activity_message: object,
+    reservation: CodexTurnReservation | None = None,
+) -> None:
+    """Run prepared text in the existing Codex conversation and deliver its result."""
+
     last_edit = 0.0
     last_status = "Starting Codex…"
 
@@ -819,31 +949,36 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
             last_status = status
             last_edit = now
         except Exception:
-            LOGGER.warning("Codex activity update failed user_id=%s", user.id)
+            LOGGER.warning("Codex activity update failed user_id=%s", user_id)
 
     publish_gateway = _git_publish_gateway(context)
     publish_lease = publish_gateway.bind_approval(
         lambda request: _codex_approvals(context).request_publish(
             context.bot,
             message.chat_id,
-            user.id,
+            user_id,
             request,
         )
     )
     try:
+        LOGGER.info("Codex turn started user_id=%s", user_id)
         response = await _codex_backend(context).run_turn(
-            user.id,
-            message.text or "",
+            user_id,
+            text,
             default_cwd=_workspace_root(),
             on_status=update_status,
-            on_approval=lambda request: _codex_approvals(context).request(message, user.id, request),
+            on_approval=lambda request: _codex_approvals(context).request(message, user_id, request),
+            reservation=reservation,
         )
     except CodexTurnDiscarded:
+        LOGGER.info("Codex turn discarded user_id=%s reason=session_replaced", user_id)
         return
     except CodexBackendError as exc:
+        LOGGER.warning("Codex turn failed user_id=%s error_type=%s", user_id, type(exc).__name__)
         await message.reply_text(exc.user_message)
         final_status = "Codex failed."
     else:
+        LOGGER.info("Codex turn completed user_id=%s", user_id)
         await _reply_agent_response(message, response.text)
         failed_images = await _reply_codex_images(message, response)
         if failed_images:
@@ -859,7 +994,21 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
         try:
             await editor(final_status)
         except Exception:
-            LOGGER.warning("Final Codex activity update failed user_id=%s", user.id)
+            LOGGER.warning("Final Codex activity update failed user_id=%s", user_id)
+
+
+def _codex_transcription_client() -> Any:
+    """Build a direct transcription client from the dedicated mounted key file."""
+
+    key_path = Path(DEFAULT_TRANSCRIPTION_KEY_PATH)
+    if not key_path.is_file() or key_path.stat().st_size > 16_384:
+        raise ValueError("transcription key file is missing or invalid")
+    api_key = key_path.read_text(encoding="utf-8").strip()
+    if not api_key or "\n" in api_key or "\r" in api_key:
+        raise ValueError("transcription key file is empty or invalid")
+    from openai import OpenAI
+
+    return OpenAI(api_key=api_key)
 
 
 def _max_output_image_bytes() -> int:
@@ -1863,10 +2012,12 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
         application.add_handler(CommandHandler("stop", codex_stop_session))
         application.add_handler(CommandHandler(["help", "start"], codex_help_command))
         application.add_handler(CallbackQueryHandler(codex_network_approval, pattern=r"^codex-(?:net|publish):"))
-        media_filter = filters.PHOTO | filters.Document.IMAGE | filters.VOICE | filters.AUDIO | filters.Document.AUDIO
+        image_filter = filters.PHOTO | filters.Document.IMAGE
+        audio_filter = filters.VOICE | filters.AUDIO | filters.Document.AUDIO
         for extension in ("flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "ogg", "wav", "webm"):
-            media_filter |= filters.Document.FileExtension(extension)
-        application.add_handler(MessageHandler(media_filter, codex_media_message))
+            audio_filter |= filters.Document.FileExtension(extension)
+        application.add_handler(MessageHandler(image_filter, codex_media_message))
+        application.add_handler(MessageHandler(audio_filter, codex_audio_message))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, codex_conversational_message))
         return application
 

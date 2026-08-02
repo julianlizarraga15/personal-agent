@@ -39,6 +39,7 @@ CODEX_PERMISSION_OVERRIDES = (
     'permissions.telegram-workspace.extends=":workspace"',
     'permissions.telegram-workspace.filesystem={"/codex-home"="deny","/trace-state"="deny",'
     '"/git-publish-secrets"="deny",'
+    '"/openai-transcription-secrets"="deny",'
     '":workspace_roots"={"**/*.env"="deny"},glob_scan_max_depth=6}',
     "permissions.telegram-workspace.network.enabled=false",
     'mcp_servers.api-football.command="/usr/local/bin/api-football-mcp"',
@@ -235,6 +236,14 @@ class CodexTurnDiscarded(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class CodexTurnReservation:
+    """Exclusive per-user admission spanning preparation and Codex execution."""
+
+    user_id: int
+    session: "CodexSession"
+
+
+@dataclass(frozen=True, slots=True)
 class CodexTurnResult:
     """Completed text plus workspace image paths requested for Telegram delivery."""
 
@@ -415,6 +424,25 @@ class CodexBackend:
             self.sessions[user_id] = session
             return session
 
+    async def reserve_turn(self, user_id: int, default_cwd: Path) -> CodexTurnReservation:
+        """Reserve one user turn before any potentially expensive input preparation."""
+
+        async with self._session_lock:
+            session = self.sessions.get(user_id)
+            if session is None:
+                session = await self._start_thread(default_cwd.resolve())
+                self.sessions[user_id] = session
+            if session.active_turn is not None or session.turn_lock.locked():
+                raise CodexBusyError("I’m still working on your previous request.")
+            await session.turn_lock.acquire()
+        return CodexTurnReservation(user_id=user_id, session=session)
+
+    def release_turn(self, reservation: CodexTurnReservation) -> None:
+        """Release a preparation reservation, including one invalidated by a reset."""
+
+        if reservation.session.turn_lock.locked():
+            reservation.session.turn_lock.release()
+
     async def stop_session(self, user_id: int) -> bool:
         async with self._session_lock:
             session = self.sessions.pop(user_id, None)
@@ -435,14 +463,18 @@ class CodexBackend:
         default_cwd: Path,
         on_status: StatusCallback | None = None,
         on_approval: ApprovalCallback | None = None,
+        reservation: CodexTurnReservation | None = None,
     ) -> CodexTurnResult:
-        session = self.sessions.get(user_id)
-        if session is None:
-            session = await self.new_session(user_id, default_cwd)
-        if session.active_turn is not None or session.turn_lock.locked():
-            raise CodexBusyError("I’m still working on your previous request.")
-
-        await session.turn_lock.acquire()
+        owns_reservation = reservation is None
+        if reservation is None:
+            reservation = await self.reserve_turn(user_id, default_cwd)
+        elif reservation.user_id != user_id:
+            raise ValueError("Codex turn reservation belongs to another user")
+        session = reservation.session
+        if self.sessions.get(user_id) is not session:
+            if owns_reservation:
+                self.release_turn(reservation)
+            raise CodexTurnDiscarded()
         session.approval_callback = on_approval
         session.event_loop = asyncio.get_running_loop()
         completed_items: list[Any] = []
@@ -493,7 +525,8 @@ class CodexBackend:
             session.active_turn = None
             session.approval_callback = None
             session.event_loop = None
-            session.turn_lock.release()
+            if owns_reservation:
+                self.release_turn(reservation)
 
         if self.sessions.get(user_id) is not session:
             raise CodexTurnDiscarded()

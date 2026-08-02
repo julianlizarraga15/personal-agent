@@ -191,6 +191,26 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         finally:
             session.turn_lock.release()
 
+    async def test_reservation_covers_preparation_and_is_invalidated_by_reset(self):
+        old_thread = FakeThread([])
+        new_thread = FakeThread([])
+        backend = CodexBackend(FakeClient([old_thread, new_thread]))
+        reservation = await backend.reserve_turn(42, Path("/tmp"))
+
+        with self.assertRaisesRegex(CodexBusyError, "still working"):
+            await backend.reserve_turn(42, Path("/tmp"))
+
+        await backend.new_session(42, Path("/tmp/project"))
+        with self.assertRaises(CodexTurnDiscarded):
+            await backend.run_turn(
+                42,
+                "late transcript",
+                default_cwd=Path("/tmp"),
+                reservation=reservation,
+            )
+        self.assertEqual(old_thread.prompts, [])
+        backend.release_turn(reservation)
+
     async def test_empty_final_response_has_specific_error(self):
         completed = event(
             "turn/completed",

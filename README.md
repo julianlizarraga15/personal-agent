@@ -37,7 +37,7 @@ The image includes Git but expects the Codex CLI and its authentication to be su
 
 ## Telegram usage with Docker Compose
 
-The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. It does not need an OpenAI API key. The bot has a writable `workspace/` mount, but no Docker socket or deployment queue. Optional Git publication keeps one repository-scoped deploy key behind a bot-side gateway; the Codex command sandbox never receives it.
+The default `AGENT_BACKEND=codex` path uses the official Codex Python SDK and a signed-in ChatGPT subscription. Text turns do not need an OpenAI API key. Optional audio transcription uses a separate OpenAI Platform API key mounted only into the bot; that direct API usage is billed separately from ChatGPT. The bot has a writable `workspace/` mount, but no Docker socket or deployment queue. Optional Git publication keeps one repository-scoped deploy key behind a bot-side gateway; the Codex command sandbox never receives either credential.
 
 Create `.env`, build the image, and perform the one-time device login. The `codex-state` volume preserves authentication and Codex configuration across container replacement.
 
@@ -57,7 +57,7 @@ Threads use a named Codex permissions profile derived from `:workspace`. Codex m
 
 When the optional `API_FOOTBALL_KEY` from the API-Sports dashboard is set in the private host `.env`, Codex can query approved read-only football analytics through the API-Football MCP `get` tool. Its keyless stdio adapter talks only to `/run/api-football.sock`; the in-process bot gateway fixes the upstream origin to `https://v3.football.api-sports.io`, verifies TLS, injects `x-apisports-key`, ignores proxy environment variables, and never gives the key to Codex. Project shell networking remains disabled. The packaged `api-football endpoints`, `api-football --help`, and `api-football get ...` commands are for trusted container diagnostics, not sandbox tasks. Odds, bookmakers, predictions, full URLs, non-GET requests, and unknown endpoints are rejected. A protected atomic counter in `trace-state` allows at most 100 attempted upstream calls per UTC day; invalid local requests do not count, and there is no response cache. Without a configured key the bot remains healthy and the tool reports that API-Football is not configured.
 
-The bot image uses system Bubblewrap with a narrow seccomp profile rather than privileged mode, `SYS_ADMIN`, or an unconfined container. A clean launcher prevents Codex commands from inheriting Telegram, OpenAI, Git, or proxy credentials. The command sandbox cannot read `/codex-home`, `/trace-state`, `/git-publish-secrets`, or workspace `.env` files. The Compose bot still has no Docker socket.
+The bot image uses system Bubblewrap with a narrow seccomp profile rather than privileged mode, `SYS_ADMIN`, or an unconfined container. A clean launcher prevents Codex commands from inheriting Telegram, OpenAI, Git, or proxy credentials. The command sandbox cannot read `/codex-home`, `/trace-state`, `/git-publish-secrets`, `/openai-transcription-secrets`, or workspace `.env` files. The Compose bot still has no Docker socket.
 
 ### Repository-scoped Git publication
 
@@ -100,7 +100,18 @@ Now add tests for that validation
 
 Agent replies use the existing safe Telegram Markdown renderer. A single debounced activity message reports coarse thinking, command, and file-change progress.
 
-When you ask Codex to create and send a plot or other image, it can attach up to four PNG, JPEG, WEBP, or static GIF files from the selected project. The bot resolves each requested path beneath the active project, rejects protected `.env` paths, verifies the actual image content, and limits each attachment to 10 MiB by default (`TELEGRAM_MAX_OUTPUT_IMAGE_BYTES`). PNG, JPEG, and WEBP are sent as photos with a document fallback; static GIFs are sent as documents. Incoming images and audio remain unavailable in Codex mode.
+Voice notes, Telegram audio attachments, and FLAC, MP3/MPEG/MPGA, MP4/M4A, OGG, WAV, or WebM audio documents are accepted in Codex mode. The bot validates the actual signature, limits audio to 20 MB (`TELEGRAM_MAX_AUDIO_BYTES`) and a reported duration of 10 minutes (`TELEGRAM_MAX_AUDIO_SECONDS`), then transcribes it in memory with `OPENAI_TRANSCRIPTION_MODEL` (`gpt-4o-mini-transcribe` by default). A caption becomes the instruction over the transcript; without a caption, the transcript is submitted directly. The per-user turn guard covers download, transcription, and Codex execution, and `/stop`, `/new`, or `/project` prevents a late transcript from entering the replacement session. Raw audio and transcript content are not logged. Incoming images remain unsupported.
+
+Audio transcription is optional and uses OpenAI Platform billing, separate from the ChatGPT subscription used by Codex. Create a dedicated Platform key, store it in an owner-readable `api-key` file in a private directory outside the workspace, and set `OPENAI_TRANSCRIPTION_SECRETS_DIR` to that directory. Copy `docker-compose.transcription.example.yml` to the ignored local file `docker-compose.transcription.yml`, then include it alongside any Git publication override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.git-publish.yml -f docker-compose.transcription.yml build bot
+docker compose -f docker-compose.yml -f docker-compose.git-publish.yml -f docker-compose.transcription.yml up -d bot
+```
+
+The directory is mounted read-only at `/openai-transcription-secrets`; the bot reads only `api-key`, and the sanitized Codex launcher neither inherits the key nor permits sandbox access to that mount. If the override or key is absent, the bot stays healthy and explains that transcription is not configured. At the planned model’s documented estimate of roughly $0.003 per audio minute, actual charges remain subject to the OpenAI pricing dashboard.
+
+When you ask Codex to create and send a plot or other image, it can attach up to four PNG, JPEG, WEBP, or static GIF files from the selected project. The bot resolves each requested path beneath the active project, rejects protected `.env` paths, verifies the actual image content, and limits each attachment to 10 MiB by default (`TELEGRAM_MAX_OUTPUT_IMAGE_BYTES`). PNG, JPEG, and WEBP are sent as photos with a document fallback; static GIFs are sent as documents.
 
 If a turn needs to download declared dependencies, review the displayed hostname and approve only when it matches the task. The approval does not authorize a different host, later turn, non-HTTPS connection, shell escape, or broader filesystem access.
 

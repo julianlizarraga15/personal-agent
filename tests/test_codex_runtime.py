@@ -13,6 +13,8 @@ class CodexRuntimeTests(unittest.TestCase):
             "OPENAI_API_KEY": "secret",
             "GITHUB_TOKEN": "secret",
             "API_FOOTBALL_KEY": "football-secret",
+            "OPENAI_TRANSCRIPTION_KEY_PATH": "/openai-transcription-secrets/api-key",
+            "OPENAI_TRANSCRIPTION_MODEL": "gpt-4o-mini-transcribe",
             "HTTPS_PROXY": "http://secret-proxy",
         }
         with patch("codex_runtime.bundled_path_dir", return_value="/opt/codex"):
@@ -21,7 +23,15 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(clean["CODEX_HOME"], "/codex-home")
         self.assertEqual(clean["HOME"], "/tmp/codex-runtime-home")
         self.assertTrue(clean["PATH"].startswith("/opt/codex:"))
-        for key in ("TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN", "API_FOOTBALL_KEY", "HTTPS_PROXY"):
+        for key in (
+            "TELEGRAM_BOT_TOKEN",
+            "OPENAI_API_KEY",
+            "GITHUB_TOKEN",
+            "API_FOOTBALL_KEY",
+            "OPENAI_TRANSCRIPTION_KEY_PATH",
+            "OPENAI_TRANSCRIPTION_MODEL",
+            "HTTPS_PROXY",
+        ):
             self.assertNotIn(key, clean)
 
 

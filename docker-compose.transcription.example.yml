@@ -1,0 +1,7 @@
+services:
+  bot:
+    volumes:
+      - type: bind
+        source: ${OPENAI_TRANSCRIPTION_SECRETS_DIR:?OPENAI_TRANSCRIPTION_SECRETS_DIR is required}
+        target: /openai-transcription-secrets
+        read_only: true
