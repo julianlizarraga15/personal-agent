@@ -33,6 +33,7 @@ from codex_backend import (
     CodexBackend,
     CodexBackendError,
     CodexBusyError,
+    CodexImageInput,
     CodexTurnDiscarded,
     CodexTurnReservation,
     CodexTurnResult,
@@ -767,9 +768,10 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
         "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. "
         "A configured project may also be published as one exact clean commit after a separate approval. "
-        "Send a voice note or supported audio file to transcribe speech into the current Codex conversation. "
-        "A caption becomes the instruction applied to the transcript. Incoming images remain unsupported; "
-        "Codex can still send images it creates in the selected workspace."
+        "Send a photo or supported image document with an optional caption for visual analysis. "
+        "Voice notes and supported audio files are transcribed into the current Codex conversation; an audio "
+        "caption becomes the instruction applied to the transcript. Codex can also send images it creates in "
+        "the selected workspace."
     )
 
 
@@ -794,12 +796,59 @@ async def codex_network_approval(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def codex_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
+    """Validate one owner image attachment and submit it to a reserved Codex turn."""
+
     user = update.effective_user
     message = update.effective_message
     if user is None or message is None or not _is_allowed(user.id):
         return
-    await message.reply_text("Incoming images are not supported in Codex mode. Please send text or audio instead.")
+    backend = _codex_backend(context)
+    try:
+        reservation = await backend.reserve_turn(user.id, _workspace_root())
+    except CodexBusyError as exc:
+        await message.reply_text(exc.user_message)
+        return
+
+    try:
+        photos = getattr(message, "photo", ()) or ()
+        media = photos[-1] if photos else getattr(message, "document", None)
+        if media is None:
+            return
+        max_bytes = _max_image_bytes()
+        declared_size = getattr(media, "file_size", None)
+        if isinstance(declared_size, int) and declared_size > max_bytes:
+            await message.reply_text(f"That image is too large. The limit is {max_bytes // (1024 * 1024)} MiB.")
+            return
+        try:
+            telegram_file = await media.get_file()
+            data = bytes(await telegram_file.download_as_bytearray())
+        except Exception as exc:
+            LOGGER.warning("Codex image download failed user_id=%s error_type=%s", user.id, type(exc).__name__)
+            await message.reply_text("I couldn’t download that image from Telegram. Please try sending it again.")
+            return
+        if len(data) > max_bytes:
+            await message.reply_text(f"That image is too large. The limit is {max_bytes // (1024 * 1024)} MiB.")
+            return
+        try:
+            media_type = _validate_image(data)
+        except ValueError:
+            LOGGER.warning("Codex image rejected user_id=%s reason=invalid_format", user.id)
+            await message.reply_text(
+                "I couldn’t use that image. Send a valid JPEG, PNG, WEBP, or non-animated GIF within the size limit."
+            )
+            return
+        activity_message = await message.reply_text("Starting Codex…")
+        await _run_codex_turn(
+            message,
+            context,
+            user.id,
+            (getattr(message, "caption", None) or "").strip() or DEFAULT_IMAGE_PROMPT,
+            activity_message=activity_message,
+            reservation=reservation,
+            image=CodexImageInput(data, media_type),
+        )
+    finally:
+        backend.release_turn(reservation)
 
 
 async def codex_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -930,6 +979,7 @@ async def _run_codex_turn(
     *,
     activity_message: object,
     reservation: CodexTurnReservation | None = None,
+    image: CodexImageInput | None = None,
 ) -> None:
     """Run prepared text in the existing Codex conversation and deliver its result."""
 
@@ -966,6 +1016,7 @@ async def _run_codex_turn(
             user_id,
             text,
             default_cwd=_workspace_root(),
+            image=image,
             on_status=update_status,
             on_approval=lambda request: _codex_approvals(context).request(message, user_id, request),
             reservation=reservation,

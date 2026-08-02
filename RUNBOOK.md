@@ -35,7 +35,7 @@
 - Sandbox denial: keep the request inside the selected workspace and do not expect an approval prompt.
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the selected project exists under `workspace/` and rebuild after dependency changes.
-- Image rejected: incoming images remain unsupported in Codex mode.
+- Image rejected: send one valid JPEG, PNG, WEBP, or non-animated GIF within `TELEGRAM_MAX_IMAGE_BYTES`; albums, stickers, animation, video, and PDFs are unsupported.
 - Audio transcription unavailable: verify the local transcription override is included, the private directory contains a non-empty `api-key`, and the mount is read-only at `/openai-transcription-secrets`. Do not print the key. Missing configuration is non-fatal; provider failures return a stable retry message.
 - Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
 - API-Football unavailable: verify the bot owns `/run/api-football.sock`, the private host `.env` contains the dashboard key, and `/trace-state/api-football-quota.json` is writable. Do not print either file. A missing key is non-fatal; an insecure socket startup or unavailable quota store fails requests safely.

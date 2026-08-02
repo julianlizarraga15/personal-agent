@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Awaitable, Callable
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ import re
 from typing import Any
 
 import openai_codex
-from openai_codex import AsyncCodex
+from openai_codex import AsyncCodex, ImageInput as SDKImageInput, TextInput
 from openai_codex.api import AsyncThread
 from openai_codex.client import CodexConfig
 from openai_codex.generated.v2_all import (
@@ -244,6 +245,18 @@ class CodexTurnReservation:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexImageInput:
+    """Validated in-memory image supplied to one Codex turn."""
+
+    data: bytes
+    media_type: str
+
+    def __post_init__(self) -> None:
+        if self.media_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+            raise ValueError("unsupported image media type")
+
+
+@dataclass(frozen=True, slots=True)
 class CodexTurnResult:
     """Completed text plus workspace image paths requested for Telegram delivery."""
 
@@ -461,6 +474,7 @@ class CodexBackend:
         text: str,
         *,
         default_cwd: Path,
+        image: CodexImageInput | None = None,
         on_status: StatusCallback | None = None,
         on_approval: ApprovalCallback | None = None,
         reservation: CodexTurnReservation | None = None,
@@ -479,7 +493,14 @@ class CodexBackend:
         session.event_loop = asyncio.get_running_loop()
         completed_items: list[Any] = []
         try:
-            handle = await session.thread.turn(text)
+            turn_input: Any = text
+            if image is not None:
+                encoded = base64.b64encode(image.data).decode("ascii")
+                turn_input = [
+                    TextInput(text),
+                    SDKImageInput(f"data:{image.media_type};base64,{encoded}"),
+                ]
+            handle = await session.thread.turn(turn_input)
             session.active_turn = handle
             if self.sessions.get(user_id) is not session:
                 await handle.interrupt()

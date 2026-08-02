@@ -10,6 +10,7 @@ from codex_backend import (
     CodexBackend,
     CodexBackendError,
     CodexBusyError,
+    CodexImageInput,
     CodexTurnDiscarded,
     event_status,
     final_message_from_items,
@@ -118,6 +119,22 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((first.cwd, second.cwd), (Path("/tmp"), Path("/tmp")))
         self.assertEqual(thread.prompts, ["one", "two"])
         self.assertEqual(len(client.start_calls), 1)
+
+    async def test_image_turn_uses_validated_data_url_input(self):
+        thread = FakeThread([successful_handle("described")])
+        backend = CodexBackend(FakeClient([thread]))
+
+        result = await backend.run_turn(
+            42,
+            "Read this screenshot",
+            default_cwd=Path("/tmp"),
+            image=CodexImageInput(b"image bytes", "image/png"),
+        )
+
+        self.assertEqual(result.text, "described")
+        turn_input = thread.prompts[0]
+        self.assertEqual(turn_input[0].text, "Read this screenshot")
+        self.assertEqual(turn_input[1].url, "data:image/png;base64,aW1hZ2UgYnl0ZXM=")
 
     async def test_new_session_interrupts_and_replaces_active_thread(self):
         old_handle = successful_handle("unused")

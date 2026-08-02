@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 from pathlib import Path
 import tempfile
@@ -45,14 +46,6 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
     def test_invalid_backend_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "AGENT_BACKEND"):
             telegram_bot.selected_backend({"AGENT_BACKEND": "unknown"})
-
-    async def test_media_is_rejected_without_download(self):
-        message = SimpleNamespace(reply_text=AsyncMock())
-        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}):
-            await telegram_bot.codex_media_message(update, SimpleNamespace())
-        message.reply_text.assert_awaited_once()
-        self.assertIn("images are not supported", message.reply_text.await_args.args[0])
 
     def test_compose_isolates_codex_bot(self):
         compose = Path("docker-compose.yml").read_text(encoding="utf-8")
@@ -147,6 +140,118 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await task)
         self.assertFalse(broker.resolve(token, 42, True))
         self.assertIn("https://pypi.org:443", source_message.reply_text.await_args.args[0])
+
+
+class CodexIncomingImageTests(unittest.IsolatedAsyncioTestCase):
+    PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    ANIMATED_GIF = base64.b64decode(
+        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAAh+QQAAAAAACwAAAAAAQABAAACAQQAOw=="
+    )
+
+    @staticmethod
+    def media(data: bytes, *, size: int | None = None) -> SimpleNamespace:
+        downloaded = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(data)))
+        return SimpleNamespace(
+            file_size=len(data) if size is None else size,
+            get_file=AsyncMock(return_value=downloaded),
+        )
+
+    @staticmethod
+    def setup(media: SimpleNamespace, *, caption: str | None = None):
+        activity = SimpleNamespace(edit_text=AsyncMock())
+        message = SimpleNamespace(
+            photo=(media,),
+            document=None,
+            caption=caption,
+            chat_id=42,
+            reply_text=AsyncMock(return_value=activity),
+        )
+        session = SimpleNamespace(turn_lock=asyncio.Lock())
+        reservation = CodexTurnReservation(42, session)
+        backend = SimpleNamespace(
+            sessions={42: session},
+            reserve_turn=AsyncMock(return_value=reservation),
+            release_turn=Mock(),
+        )
+        context = SimpleNamespace(
+            application=SimpleNamespace(bot_data={telegram_bot.CODEX_BACKEND_KEY: backend})
+        )
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=message)
+        return update, context, message, backend, reservation
+
+    async def test_image_is_validated_and_submitted_with_caption(self):
+        media = self.media(self.PNG)
+        update, context, _, backend, reservation = self.setup(media, caption="Read this error")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_codex_turn", new_callable=AsyncMock
+        ) as run:
+            await telegram_bot.codex_media_message(update, context)
+
+        media.get_file.assert_awaited_once()
+        self.assertEqual(run.await_args.args[3], "Read this error")
+        image = run.await_args.kwargs["image"]
+        self.assertEqual((image.data, image.media_type), (self.PNG, "image/png"))
+        self.assertIs(run.await_args.kwargs["reservation"], reservation)
+        backend.release_turn.assert_called_once_with(reservation)
+
+    async def test_captionless_image_uses_default_prompt(self):
+        update, context, _, _, _ = self.setup(self.media(self.PNG), caption="  ")
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_codex_turn", new_callable=AsyncMock
+        ) as run:
+            await telegram_bot.codex_media_message(update, context)
+
+        self.assertEqual(run.await_args.args[3], telegram_bot.DEFAULT_IMAGE_PROMPT)
+
+    async def test_limits_invalid_images_unauthorized_and_busy_reject_before_turn(self):
+        cases = (
+            (7, self.media(self.PNG), {}, None),
+            (42, self.media(self.PNG, size=11), {"TELEGRAM_MAX_IMAGE_BYTES": "10"}, None),
+            (42, self.media(self.ANIMATED_GIF), {}, None),
+            (42, self.media(self.PNG), {}, CodexBusyError("I’m still working on your previous request.")),
+        )
+        for user_id, media, extra, busy_error in cases:
+            with self.subTest(user_id=user_id, extra=extra, busy=busy_error is not None):
+                update, context, message, backend, _ = self.setup(media)
+                update.effective_user.id = user_id
+                if busy_error is not None:
+                    backend.reserve_turn.side_effect = busy_error
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42", **extra}), patch(
+                    "telegram_bot._run_codex_turn", new_callable=AsyncMock
+                ) as run:
+                    await telegram_bot.codex_media_message(update, context)
+                run.assert_not_awaited()
+                if user_id == 7:
+                    backend.reserve_turn.assert_not_awaited()
+                    media.get_file.assert_not_awaited()
+                    message.reply_text.assert_not_awaited()
+                elif busy_error is not None or extra:
+                    media.get_file.assert_not_awaited()
+
+    async def test_actual_size_and_download_failures_are_stable(self):
+        oversized = self.media(self.PNG, size=1)
+        update, context, message, backend, reservation = self.setup(oversized)
+        with patch.dict(
+            os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42", "TELEGRAM_MAX_IMAGE_BYTES": "10"}
+        ), patch("telegram_bot._run_codex_turn", new_callable=AsyncMock) as run:
+            await telegram_bot.codex_media_message(update, context)
+        run.assert_not_awaited()
+        self.assertIn("too large", message.reply_text.await_args.args[0].lower())
+        backend.release_turn.assert_called_once_with(reservation)
+
+        unavailable = self.media(self.PNG)
+        unavailable.get_file.side_effect = RuntimeError("private Telegram failure")
+        update, context, message, _, _ = self.setup(unavailable)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USER_ID": "42"}), patch(
+            "telegram_bot._run_codex_turn", new_callable=AsyncMock
+        ) as run, self.assertLogs("telegram_bot", level="WARNING") as logs:
+            await telegram_bot.codex_media_message(update, context)
+        run.assert_not_awaited()
+        self.assertIn("couldn’t download", message.reply_text.await_args.args[0].lower())
+        self.assertNotIn("private Telegram failure", "\n".join(logs.output))
 
 
 class CodexAudioTests(unittest.IsolatedAsyncioTestCase):
