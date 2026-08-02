@@ -337,7 +337,13 @@ class CodexApprovalBroker:
                         LOGGER.debug("Codex approval prompt finalization failed", exc_info=True)
         return approved
 
-    async def request_publish(self, message: object, user_id: int, request: GitPublishApproval) -> bool:
+    async def request_publish(
+        self,
+        bot: object,
+        chat_id: int,
+        user_id: int,
+        request: GitPublishApproval,
+    ) -> bool:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         token = secrets.token_hex(8)
@@ -358,19 +364,30 @@ class CodexApprovalBroker:
             "Approval applies only to this commit and destination. The deploy key remains unavailable to Codex."
         )
         result = "Publication rejected."
+        outcome = "rejected"
         try:
-            pending.prompt_message = await message.reply_text(prompt, reply_markup=keyboard)  # type: ignore[attr-defined]
+            LOGGER.info("Codex publication approval sending user_id=%s chat_id=%s", user_id, chat_id)
+            pending.prompt_message = await bot.send_message(  # type: ignore[attr-defined]
+                chat_id=chat_id,
+                text=prompt,
+                reply_markup=keyboard,
+            )
+            LOGGER.info("Codex publication approval delivered user_id=%s chat_id=%s", user_id, chat_id)
             approved = await asyncio.wait_for(asyncio.shield(future), CODEX_APPROVAL_TIMEOUT_SECONDS)
             result = "Publication approved once." if approved else "Publication rejected."
+            outcome = "approved" if approved else "rejected"
         except TimeoutError:
             approved = False
             result = "Publication approval expired."
+            outcome = "expired"
         except Exception:
             LOGGER.warning("Codex publication approval failed user_id=%s", user_id, exc_info=True)
             approved = False
             result = "Publication rejected."
+            outcome = "delivery_failed"
         finally:
             self.pending.pop(token, None)
+            LOGGER.info("Codex publication approval finished user_id=%s outcome=%s", user_id, outcome)
             if pending.prompt_message is not None:
                 editor = getattr(pending.prompt_message, "edit_text", None)
                 if editor is not None:
@@ -806,7 +823,12 @@ async def codex_conversational_message(update: Update, context: ContextTypes.DEF
 
     publish_gateway = _git_publish_gateway(context)
     publish_lease = publish_gateway.bind_approval(
-        lambda request: _codex_approvals(context).request_publish(message, user.id, request)
+        lambda request: _codex_approvals(context).request_publish(
+            context.bot,
+            message.chat_id,
+            user.id,
+            request,
+        )
     )
     try:
         response = await _codex_backend(context).run_turn(

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import gzip
 from io import BytesIO
@@ -14,7 +15,9 @@ from PIL import Image
 
 import telegram_bot
 from codex_backend import CodexTurnResult
+from git_publish import GitPublishApproval
 from telegram_bot import (
+    CodexApprovalBroker,
     DEFAULT_IMAGE_PROMPT,
     ConversationSession,
     PendingApproval,
@@ -240,6 +243,35 @@ class TelegramWorkerTests(unittest.TestCase):
     def test_deployment_report_distinguishes_success_and_rollback(self) -> None:
         self.assertIn("completed successfully", _deployment_report({"status": "awaiting_report", "deployment_id": "d1", "commit": "abc"}))
         self.assertIn("rollback completed", _deployment_report({"status": "rollback_completed", "deployment_id": "d1"}))
+
+
+class CodexApprovalBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_publication_approval_is_sent_directly_to_owner_chat(self) -> None:
+        broker = CodexApprovalBroker()
+        prompt_message = SimpleNamespace(edit_text=AsyncMock())
+        bot = SimpleNamespace(send_message=AsyncMock(return_value=prompt_message))
+        request = GitPublishApproval(
+            "/workspace/mental-models",
+            "git@github.com:julianlizarraga15/mental-models.git",
+            "main",
+            "a" * 40,
+        )
+
+        approval = asyncio.create_task(broker.request_publish(bot, 99, 42, request))
+        await asyncio.sleep(0)
+        token = next(iter(broker.pending))
+        self.assertTrue(broker.resolve(token, 42, True))
+
+        self.assertTrue(await approval)
+        bot.send_message.assert_awaited_once()
+        self.assertEqual(bot.send_message.await_args.kwargs["chat_id"], 99)
+        self.assertIn("one exact commit", bot.send_message.await_args.kwargs["text"])
+        callback_data = bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data
+        self.assertEqual(callback_data, f"codex-publish:{token}:allow")
+        prompt_message.edit_text.assert_awaited_once_with(
+            "Publication approved once.\nDestination: "
+            "git@github.com:julianlizarraga15/mental-models.git (main)"
+        )
 
 
 class AgentResponseFormattingTests(unittest.IsolatedAsyncioTestCase):
