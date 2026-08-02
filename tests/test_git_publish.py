@@ -171,6 +171,7 @@ class GitPublishGatewayTests(unittest.IsolatedAsyncioTestCase):
             masked = [Path(command[index + 1]) for index, value in enumerate(command[:-1]) if value == "--tmpfs"]
             self.assertTrue(any(secrets.is_relative_to(path) for path in masked))
             self.assertNotIn("GIT_SSH_COMMAND", command)
+            self.assertIn(f"safe.directory={repository}", command)
             self.assertEqual(command[-2:], ["status", "--porcelain=v1"])
 
     def test_credentials_are_used_only_with_a_fresh_bare_repository(self):

@@ -168,8 +168,8 @@ def _git_environment(key_path: Path, known_hosts_path: Path) -> dict[str, str]:
     return {**_base_git_environment(), "GIT_SSH_COMMAND": ssh_command}
 
 
-def _git_command(args: list[str]) -> list[str]:
-    return [
+def _git_command(args: list[str], *, safe_directory: Path | None = None) -> list[str]:
+    command = [
         "/usr/bin/git",
         "-c",
         "core.hooksPath=/dev/null",
@@ -177,8 +177,11 @@ def _git_command(args: list[str]) -> list[str]:
         "core.fsmonitor=false",
         "-c",
         "credential.helper=",
-        *args,
     ]
+    if safe_directory is not None:
+        command.extend(("-c", f"safe.directory={safe_directory}"))
+    command.extend(args)
+    return command
 
 
 def _run_process(
@@ -252,7 +255,7 @@ def _source_sandbox_command(
     command.extend(("--chdir", str(repository), "--clearenv"))
     for name, value in _base_git_environment().items():
         command.extend(("--setenv", name, value))
-    command.extend(_git_command(args))
+    command.extend(_git_command(args, safe_directory=repository))
     return command
 
 
