@@ -49,6 +49,7 @@ CODEX_PERMISSION_OVERRIDES = (
     "mcp_servers.git-publish.required=true",
     'mcp_servers.git-publish.enabled_tools=["publish"]',
     'mcp_servers.git-publish.default_tools_approval_mode="auto"',
+    'mcp_servers.git-publish.tools.publish.approval_mode="approve"',
 )
 
 CODEX_CAPABILITY_INSTRUCTION = (

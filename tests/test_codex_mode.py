@@ -73,6 +73,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("network.unix_sockets", backend)
         self.assertIn("api-football-mcp", backend)
         self.assertIn("git-publish-mcp", backend)
+        self.assertIn('mcp_servers.git-publish.tools.publish.approval_mode="approve"', backend)
         self.assertIn("network.enabled=false", backend)
 
         deployer = compose.split("  deployer:", 1)[1].split("  codex-login:", 1)[0]
