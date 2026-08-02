@@ -11,7 +11,7 @@
    ```
 
 3. Start the bot with `docker compose up -d bot`. The Docker-privileged deployer is disabled by default.
-4. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text or supported voice/audio. `/run` and deployment commands are unavailable.
+4. Put a checkout under `workspace/`, send `/project <directory-name>` from the configured Telegram account, then send ordinary text, a supported image, or supported voice/audio. `/run` and deployment commands are unavailable.
 
 ## Health checks
 
@@ -20,6 +20,7 @@
 - Inspect `docker compose logs -f bot` while submitting a task.
 - Confirm `/help` lists only `/project`, `/new`, `/stop`, and `/help`.
 - Confirm a normal text turn, continued context, repository read/edit/test work, `/new`, `/project`, `/stop`, progress editing, and Markdown rendering.
+- Confirm one captionless image receives a useful description and one captioned image follows the caption as its instruction. During an image download, issue `/new` and confirm the old turn never enters the fresh conversation.
 - With the transcription override enabled, confirm one captionless voice note becomes the Codex request and one captioned note applies the caption as its instruction. During a longer transcription, issue `/new` and confirm the old result never enters the fresh conversation.
 - Confirm `/openai-transcription-secrets` is mounted read-only, is denied inside a Codex command, and `OPENAI_API_KEY`, `OPENAI_TRANSCRIPTION_KEY_PATH`, and `OPENAI_TRANSCRIPTION_MODEL` are absent from the sanitized Codex launcher environment. Inspect logs only for content-free success/failure metadata, then confirm usage in the OpenAI dashboard.
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.

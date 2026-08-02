@@ -4,7 +4,7 @@ Last updated: 2026-08-02
 
 ## Current state
 
-- The default Telegram backend uses pinned `openai-codex==0.144.4`, ephemeral in-memory threads, a named Bubblewrap workspace permission profile, and a sanitized launcher. The local tree now accepts validated JPEG, PNG, WEBP, and static GIF Telegram input as in-memory Codex SDK image data URLs, without writing media into the workspace or adding credentials. Supported Telegram audio is transcribed with `gpt-4o-mini-transcribe` through an optional dedicated, read-only OpenAI Platform key mount; only transcript text reaches Codex. The command sandbox receives neither the key nor its mount.
+- The default Telegram backend uses pinned `openai-codex==0.144.4`, ephemeral in-memory threads, a named Bubblewrap workspace permission profile, and a sanitized launcher. It accepts validated JPEG, PNG, WEBP, and static GIF Telegram input as in-memory Codex SDK image data URLs, without writing media into the workspace or adding credentials. Supported Telegram audio is transcribed with `gpt-4o-mini-transcribe` through an optional dedicated, read-only OpenAI Platform key mount; only transcript text reaches Codex. The command sandbox receives neither the key nor its mount.
 - Repository-scoped publication is configured for `/workspace/mental-models`, `git@github.com:julianlizarraga15/mental-models.git`, and `main`. Its dedicated deploy key and verified `known_hosts` live outside the workspace and are mounted read-only at `/git-publish-secrets`; Codex and project commands cannot read them.
 - The Git-publish MCP adapter is keyless. Codex auto-approves only invocation of `git-publish.publish` through the per-tool `approval_mode="approve"` setting, avoiding a duplicate generic MCP write-tool elicitation. The bot-side gateway remains the sole publication approval boundary and requires a newly delivered owner-only **Publish once** decision for the displayed repository, branch, and exact clean commit.
 - The gateway rechecks the worktree after approval, creates a bounded bundle in a credential-free networkless Bubblewrap, imports it into a fresh bare repository, and performs an exact non-force GitHub SSH push with hooks, inherited Git configuration, credential helpers, interactive authentication, and password authentication disabled.
@@ -22,14 +22,14 @@ Last updated: 2026-08-02
 
 ## Last stopping point
 
-- Incoming Codex image support, tests, documentation, and ADR 0013 are implemented and ready for deployment. The full local suite passes: 201 tests passed and four host-boundary tests skipped.
+- Incoming Codex image support, tests, documentation, and ADR 0013 were committed as `3307321`, published directly to `main`, and deployed. The full local suite passes: 201 tests passed and four host-boundary tests skipped.
 - The earlier Codex audio implementation, tests, configuration example, and documentation are committed and published directly to `main`.
-- The live `personal-agent-bot-1` runs image `sha256:90d5e04919a314a90e0b25cd215d326efac9308ce9fd8262f772ce88fc5d79da`; it is healthy with zero restarts, uses the existing Codex authentication volume, and has `/openai-transcription-secrets` mounted read-only. An accidentally created second Compose project was removed, resolving its Telegram polling conflict.
+- The live `personal-agent-bot-1` runs image `sha256:e4e8994b6e64fbb35c3e26cd21ba0a7839128c5d40cf28cc06cd5e536e966ba0`; it is healthy with zero restarts, uses the existing Codex authentication volume, and has `/git-publish-secrets` and `/openai-transcription-secrets` mounted read-only. A briefly created directory-named Compose project was removed before the correct `personal-agent` service was recreated.
 - The previously validated combined base, Git-publication example, and transcription example Compose configuration remains unchanged by the image-input work.
 
 ## Next steps
 
-1. Commit/publish the incoming-image change when requested, rebuild the bot, and verify one captionless and one captioned Telegram image end to end.
+1. Verify one captionless and one captioned Telegram image end to end.
 2. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
 3. From Telegram, request publication of the existing `mental-models` commit.
 4. Confirm that a separate card displays the fixed GitHub remote, `main`, and commit `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
@@ -42,5 +42,5 @@ Last updated: 2026-08-02
 - The Telegram gateway approval is mandatory, memory-only, single-use, destination/commit-bound, and expires after five minutes.
 - The bot process holds narrow publication authority. Restrict and revoke the repository deploy key if the host or bot process is compromised.
 - The optional transcription call is separately billed and cannot be interrupted once its synchronous worker-thread request has started; session invalidation prevents the result from being submitted to a replacement Codex thread.
-- Incoming image bytes are sent to the Codex service as model input and remain available only in the ephemeral Codex thread until `/new`, `/project`, `/stop`, process exit, or bot replacement discards it. The local implementation has not yet been exercised against Telegram and the live signed-in Codex service.
+- Incoming image bytes are sent to the Codex service as model input and remain available only in the ephemeral Codex thread until `/new`, `/project`, `/stop`, process exit, or bot replacement discards it. The deployed implementation has not yet been exercised with a real Telegram image against the live signed-in Codex service.
 - Do not commit `.env`, private keys, tokens, `auth.json`, local Compose overrides, generated caches, or workspace project repositories.
