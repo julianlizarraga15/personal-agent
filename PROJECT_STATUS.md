@@ -1,10 +1,10 @@
 # Project status
 
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 
 ## Current state
 
-- The default Telegram backend uses pinned `openai-codex==0.144.4`, ephemeral in-memory threads, a named Bubblewrap workspace permission profile, and a sanitized launcher. It accepts validated JPEG, PNG, WEBP, and static GIF Telegram input as in-memory Codex SDK image data URLs, without writing media into the workspace or adding credentials. Supported Telegram audio is transcribed with `gpt-4o-mini-transcribe` through an optional dedicated, read-only OpenAI Platform key mount; only transcript text reaches Codex. The command sandbox receives neither the key nor its mount.
+- The default Telegram backend uses pinned `openai-codex==0.144.4`, ephemeral in-memory threads, a named Bubblewrap workspace permission profile, and a sanitized launcher. Telegram photos remain validated in-memory Codex SDK image inputs, and voice/audio attachments remain validated transcription inputs. Any explicit Telegram document is now atomically persisted byte-for-byte under `telegram_uploads/` in the selected project and submitted to Codex by its untrusted relative workspace path. Upload admission is turn-reserved, capped at 20,000,000 bytes by default, and rejects traversal, symlinked inboxes, protected `.env` variants, recognizable credential/private-key files, and private-key content.
 - Repository-scoped publication is configured for `/workspace/mental-models`, `git@github.com:julianlizarraga15/mental-models.git`, and `main`. Its dedicated deploy key and verified `known_hosts` live outside the workspace and are mounted read-only at `/git-publish-secrets`; Codex and project commands cannot read them.
 - The Git-publish MCP adapter is keyless. Codex auto-approves only invocation of `git-publish.publish` through the per-tool `approval_mode="approve"` setting, avoiding a duplicate generic MCP write-tool elicitation. The bot-side gateway remains the sole publication approval boundary and requires a newly delivered owner-only **Publish once** decision for the displayed repository, branch, and exact clean commit.
 - The gateway rechecks the worktree after approval, creates a bounded bundle in a credential-free networkless Bubblewrap, imports it into a fresh bare repository, and performs an exact non-force GitHub SSH push with hooks, inherited Git configuration, credential helpers, interactive authentication, and password authentication disabled.
@@ -22,6 +22,7 @@ Last updated: 2026-08-02
 
 ## Last stopping point
 
+- Arbitrary inbound Codex document support, focused tests, configuration, help text, operational guidance, README/architecture/security documentation, and ADR 0014 are implemented and deployed on `main`. The focused Telegram/Codex suite passes with 90 tests; the complete suite passes with 205 tests and four host-boundary skips.
 - Incoming Codex image support, tests, documentation, and ADR 0013 were committed as `3307321`, published directly to `main`, and deployed. The full local suite passes: 201 tests passed and four host-boundary tests skipped.
 - The earlier Codex audio implementation, tests, configuration example, and documentation are committed and published directly to `main`.
 - The live `personal-agent-bot-1` runs image `sha256:e4e8994b6e64fbb35c3e26cd21ba0a7839128c5d40cf28cc06cd5e536e966ba0`; it is healthy with zero restarts, uses the existing Codex authentication volume, and has `/git-publish-secrets` and `/openai-transcription-secrets` mounted read-only. A briefly created directory-named Compose project was removed before the correct `personal-agent` service was recreated.
@@ -29,12 +30,11 @@ Last updated: 2026-08-02
 
 ## Next steps
 
-1. Verify one captionless and one captioned Telegram image end to end.
-2. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
-3. From Telegram, request publication of the existing `mental-models` commit.
-4. Confirm that a separate card displays the fixed GitHub remote, `main`, and commit `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
-5. Press **Publish once** and verify the card changes to approved, the MCP call succeeds, and GitHub `main` reaches that exact commit.
-6. Record the end-to-end results here. If any fail, use content-free bot logs and the Codex runtime log rather than inferring the failure layer from model prose.
+1. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
+2. Verify one captionless and one captioned Telegram photo end to end.
+3. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
+4. From Telegram, request publication of the existing `mental-models` commit, confirm the fixed remote/branch/commit card, approve once, and verify GitHub `main` reaches `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
+5. Record the end-to-end results here. If any fail, use content-free bot logs and the Codex runtime log rather than inferring the failure layer from model prose.
 
 ## Assumptions and risks
 
@@ -43,4 +43,5 @@ Last updated: 2026-08-02
 - The bot process holds narrow publication authority. Restrict and revoke the repository deploy key if the host or bot process is compromised.
 - The optional transcription call is separately billed and cannot be interrupted once its synchronous worker-thread request has started; session invalidation prevents the result from being submitted to a replacement Codex thread.
 - Incoming image bytes are sent to the Codex service as model input and remain available only in the ephemeral Codex thread until `/new`, `/project`, `/stop`, process exit, or bot replacement discards it. The deployed implementation has not yet been exercised with a real Telegram image against the live signed-in Codex service.
+- Incoming documents intentionally change the selected project's working tree and persist across session resets and bot replacement. They are untrusted, are not automatically ignored/extracted/deleted, and can enter a later commit unless reviewed. Arbitrary format support does not permit credentials or remove the 20,000,000-byte default limit.
 - Do not commit `.env`, private keys, tokens, `auth.json`, local Compose overrides, generated caches, or workspace project repositories.

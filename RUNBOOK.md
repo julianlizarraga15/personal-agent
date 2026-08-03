@@ -20,8 +20,9 @@
 - Inspect `docker compose logs -f bot` while submitting a task.
 - Confirm `/help` lists only `/project`, `/new`, `/stop`, and `/help`.
 - Confirm a normal text turn, continued context, repository read/edit/test work, `/new`, `/project`, `/stop`, progress editing, and Markdown rendering.
-- Confirm one captionless image receives a useful description and one captioned image follows the caption as its instruction. During an image download, issue `/new` and confirm the old turn never enters the fresh conversation.
+- Confirm one captionless photo receives a useful description and one captioned photo follows the caption as its instruction. During a photo download, issue `/new` and confirm the old turn never enters the fresh conversation.
 - With the transcription override enabled, confirm one captionless voice note becomes the Codex request and one captioned note applies the caption as its instruction. During a longer transcription, issue `/new` and confirm the old result never enters the fresh conversation.
+- Send captioned and captionless SVG/PDF documents, confirm their exact bytes appear beneath the selected project's `telegram_uploads/`, and confirm a later text turn can inspect them. Verify an image sent as a document follows this persistent path rather than visual input.
 - Confirm `/openai-transcription-secrets` is mounted read-only, is denied inside a Codex command, and `OPENAI_API_KEY`, `OPENAI_TRANSCRIPTION_KEY_PATH`, and `OPENAI_TRANSCRIPTION_MODEL` are absent from the sanitized Codex launcher environment. Inspect logs only for content-free success/failure metadata, then confirm usage in the OpenAI dashboard.
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
 - Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
@@ -36,7 +37,8 @@
 - Sandbox denial: keep the request inside the selected workspace and do not expect an approval prompt.
 - Test failure: use the worker output to reproduce the project test command in an isolated checkout.
 - Agent tool failure: verify the selected project exists under `workspace/` and rebuild after dependency changes.
-- Image rejected: send one valid JPEG, PNG, WEBP, or non-animated GIF within `TELEGRAM_MAX_IMAGE_BYTES`; albums, stickers, animation, video, and PDFs are unsupported.
+- Photo rejected: send one valid JPEG, PNG, WEBP, or non-animated GIF photo within `TELEGRAM_MAX_IMAGE_BYTES`; albums, stickers, animation, and video remain unsupported. Send PDFs and other file formats explicitly as documents instead.
+- Document rejected: keep the file within `TELEGRAM_MAX_DOCUMENT_BYTES` and do not send traversal/control-character names, `.env` variants, credential/private-key files, or private-key content. `.env.example` is the only allowed `.env` variant.
 - Audio transcription unavailable: verify the local transcription override is included, the private directory contains a non-empty `api-key`, and the mount is read-only at `/openai-transcription-secrets`. Do not print the key. Missing configuration is non-fatal; provider failures return a stable retry message.
 - Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
 - API-Football unavailable: verify the bot owns `/run/api-football.sock`, the private host `.env` contains the dashboard key, and `/trace-state/api-football-quota.json` is writable. Do not print either file. A missing key is non-fatal; an insecure socket startup or unavailable quota store fails requests safely.

@@ -37,11 +37,21 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
             {
                 telegram_bot.codex_media_message,
                 telegram_bot.codex_audio_message,
+                telegram_bot.codex_document_message,
                 telegram_bot.codex_conversational_message,
             },
         )
         self.assertFalse(any(isinstance(handler, MessageReactionHandler) for handler in handlers))
         self.assertEqual(callback_callbacks, {telegram_bot.codex_network_approval})
+
+        filters_by_callback = {
+            handler.callback: repr(handler.filters)
+            for handler in handlers
+            if isinstance(handler, MessageHandler)
+        }
+        self.assertEqual(filters_by_callback[telegram_bot.codex_media_message], "filters.PHOTO")
+        self.assertNotIn("Document", filters_by_callback[telegram_bot.codex_audio_message])
+        self.assertEqual(filters_by_callback[telegram_bot.codex_document_message], "filters.Document.ALL")
 
     def test_invalid_backend_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "AGENT_BACKEND"):
@@ -58,6 +68,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("OPENAI_API_KEY", bot)
         self.assertIn("API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}", bot)
         self.assertIn("GIT_PUBLISH_REPOSITORY: ${GIT_PUBLISH_REPOSITORY:-}", bot)
+        self.assertIn("TELEGRAM_MAX_DOCUMENT_BYTES: ${TELEGRAM_MAX_DOCUMENT_BYTES:-20000000}", bot)
         self.assertNotIn("deploy-key", bot.split("volumes:", 1)[1] if "volumes:" in bot else "")
         self.assertNotIn("DEPLOYMENT_STATE_DIR", bot)
         self.assertIn("seccomp=./security/codex-bwrap-seccomp.json", bot)
@@ -252,6 +263,192 @@ class CodexIncomingImageTests(unittest.IsolatedAsyncioTestCase):
         run.assert_not_awaited()
         self.assertIn("couldn’t download", message.reply_text.await_args.args[0].lower())
         self.assertNotIn("private Telegram failure", "\n".join(logs.output))
+
+
+class CodexDocumentTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def document(
+        data: bytes,
+        *,
+        name: str | None = "sample.bin",
+        size: int | None = None,
+        unique_id: str | None = "unique-1",
+        mime_type: str | None = "application/octet-stream",
+    ) -> SimpleNamespace:
+        downloaded = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(data)))
+        return SimpleNamespace(
+            file_name=name,
+            file_size=len(data) if size is None else size,
+            file_unique_id=unique_id,
+            mime_type=mime_type,
+            get_file=AsyncMock(return_value=downloaded),
+        )
+
+    @staticmethod
+    def setup(document: SimpleNamespace, cwd: Path, *, caption: str | None = None, user_id: int = 42):
+        activity = SimpleNamespace(edit_text=AsyncMock())
+        message = SimpleNamespace(document=document, caption=caption, chat_id=42, reply_text=AsyncMock(return_value=activity))
+        session = SimpleNamespace(cwd=cwd, turn_lock=asyncio.Lock())
+        reservation = CodexTurnReservation(42, session)
+        backend = SimpleNamespace(
+            sessions={42: session},
+            reserve_turn=AsyncMock(return_value=reservation),
+            release_turn=Mock(),
+        )
+        context = SimpleNamespace(application=SimpleNamespace(bot_data={telegram_bot.CODEX_BACKEND_KEY: backend}))
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=user_id), effective_message=message)
+        return update, context, message, backend, reservation
+
+    async def test_arbitrary_formats_are_preserved_and_submitted_by_workspace_path(self):
+        payloads = (
+            ("drawing.svg", b'<svg xmlns="http://www.w3.org/2000/svg"/>'),
+            ("notes.pdf", b"%PDF-1.7\nbytes"),
+            ("archive.bin", b"\x00\xff\x10arbitrary"),
+            ("as-file.png", CodexIncomingImageTests.PNG),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            for filename, payload in payloads:
+                with self.subTest(filename=filename):
+                    document = self.document(payload, name=filename, mime_type="image/jpeg")
+                    update, context, _, backend, reservation = self.setup(document, project, caption="Inspect this")
+                    with patch.dict(
+                        os.environ,
+                        {"TELEGRAM_ALLOWED_USER_ID": "42", "AGENT_WORKSPACE_ROOT": str(root)},
+                    ), patch("telegram_bot._run_codex_turn", new_callable=AsyncMock) as run:
+                        await telegram_bot.codex_document_message(update, context)
+
+                    self.assertEqual((project / "telegram_uploads" / filename).read_bytes(), payload)
+                    prompt = run.await_args.args[3]
+                    self.assertTrue(prompt.startswith("Inspect this\n\n"))
+                    self.assertIn(f"telegram_uploads/{filename}", prompt)
+                    self.assertIn("untrusted", prompt)
+                    self.assertNotIn("image", run.await_args.kwargs)
+                    backend.release_turn.assert_called_once_with(reservation)
+
+    async def test_captionless_fallback_sanitization_and_atomic_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "selected"
+            project.mkdir()
+            with patch.dict(os.environ, {"AGENT_WORKSPACE_ROOT": str(root)}):
+                self.assertEqual(
+                    telegram_bot._safe_upload_filename(None, "id:123"),
+                    "telegram-document-id_123.bin",
+                )
+                sanitized = telegram_bot._safe_upload_filename("report?.txt")
+                self.assertEqual(sanitized, "report_.txt")
+                self.assertLessEqual(len(telegram_bot._safe_upload_filename("界" * 200 + ".txt").encode()), 180)
+                relative = telegram_bot._persist_upload(project, sanitized, b"first")
+                telegram_bot._persist_upload(project, sanitized, b"second")
+            self.assertEqual(relative.as_posix(), "telegram_uploads/report_.txt")
+            self.assertEqual((project / relative).read_bytes(), b"second")
+            self.assertEqual(list((project / "telegram_uploads").iterdir()), [project / relative])
+
+            document = self.document(b"plain", name=None, unique_id="abc")
+            update, context, _, _, _ = self.setup(document, project)
+            with patch.dict(
+                os.environ,
+                {"TELEGRAM_ALLOWED_USER_ID": "42", "AGENT_WORKSPACE_ROOT": str(root)},
+            ), patch("telegram_bot._run_codex_turn", new_callable=AsyncMock) as run:
+                await telegram_bot.codex_document_message(update, context)
+            self.assertTrue(run.await_args.args[3].startswith(telegram_bot.DEFAULT_DOCUMENT_PROMPT))
+            self.assertTrue((project / "telegram_uploads" / "telegram-document-abc.bin").exists())
+
+    async def test_rejects_traversal_controls_credentials_private_keys_and_symlinked_inbox(self):
+        bad_names = ("../escape.txt", "dir/file.txt", "bad\nname.txt", ".env", ".env.local", "id_rsa", "client_secret_prod.json")
+        for name in bad_names:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    safe = telegram_bot._safe_upload_filename(name)
+                    telegram_bot._validate_upload_credentials(safe, b"ordinary")
+        telegram_bot._validate_upload_credentials(".env.example", b"PLACEHOLDER=yes")
+        with self.assertRaises(ValueError):
+            telegram_bot._validate_upload_credentials(
+                "notes.txt",
+                b"-----BEGIN OPENSSH PRIVATE KEY-----\nsecret",
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            outside = root / "outside"
+            project.mkdir()
+            outside.mkdir()
+            (project / "telegram_uploads").symlink_to(outside, target_is_directory=True)
+            with patch.dict(os.environ, {"AGENT_WORKSPACE_ROOT": str(root)}), self.assertRaises(ValueError):
+                telegram_bot._persist_upload(project, "safe.txt", b"data")
+            self.assertEqual(list(outside.iterdir()), [])
+
+    async def test_size_download_write_authorization_busy_and_session_reset_fail_safely(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            base_env = {"TELEGRAM_ALLOWED_USER_ID": "42", "AGENT_WORKSPACE_ROOT": str(root)}
+
+            for document, extra, expected in (
+                (self.document(b"small", size=11), {"TELEGRAM_MAX_DOCUMENT_BYTES": "10"}, "too large"),
+                (self.document(b"elevenbytes", size=1), {"TELEGRAM_MAX_DOCUMENT_BYTES": "10"}, "too large"),
+            ):
+                update, context, message, _, _ = self.setup(document, project)
+                with patch.dict(os.environ, {**base_env, **extra}), patch(
+                    "telegram_bot._run_codex_turn", new_callable=AsyncMock
+                ) as run:
+                    await telegram_bot.codex_document_message(update, context)
+                self.assertIn(expected, message.reply_text.await_args.args[0].lower())
+                run.assert_not_awaited()
+
+            unavailable = self.document(b"data")
+            unavailable.get_file.side_effect = RuntimeError("private path detail")
+            update, context, message, _, _ = self.setup(unavailable, project)
+            with patch.dict(os.environ, base_env), self.assertLogs("telegram_bot", level="WARNING") as logs:
+                await telegram_bot.codex_document_message(update, context)
+            self.assertIn("couldn’t download", message.reply_text.await_args.args[0].lower())
+            self.assertNotIn("private path detail", "\n".join(logs.output))
+
+            unauthorized = self.document(b"data")
+            update, context, message, backend, _ = self.setup(unauthorized, project, user_id=7)
+            with patch.dict(os.environ, base_env):
+                await telegram_bot.codex_document_message(update, context)
+            backend.reserve_turn.assert_not_awaited()
+            unauthorized.get_file.assert_not_awaited()
+            message.reply_text.assert_not_awaited()
+
+            busy = self.document(b"data")
+            update, context, _, backend, _ = self.setup(busy, project)
+            backend.reserve_turn.side_effect = CodexBusyError("I’m still working on your previous request.")
+            with patch.dict(os.environ, base_env):
+                await telegram_bot.codex_document_message(update, context)
+            busy.get_file.assert_not_awaited()
+
+            replaced = self.document(b"data")
+            update, context, _, backend, _ = self.setup(replaced, project)
+
+            async def replace_session():
+                backend.sessions[42] = SimpleNamespace(cwd=project, turn_lock=asyncio.Lock())
+                return bytearray(b"data")
+
+            telegram_file = await replaced.get_file()
+            telegram_file.download_as_bytearray = replace_session
+            with patch.dict(os.environ, base_env), patch(
+                "telegram_bot._run_codex_turn", new_callable=AsyncMock
+            ) as run:
+                await telegram_bot.codex_document_message(update, context)
+            run.assert_not_awaited()
+            self.assertFalse((project / "telegram_uploads").exists())
+
+            failure = self.document(b"data")
+            update, context, message, _, _ = self.setup(failure, project)
+            with patch.dict(os.environ, base_env), patch(
+                "telegram_bot._persist_upload", side_effect=OSError("private filesystem path")
+            ), self.assertLogs("telegram_bot", level="WARNING") as logs:
+                await telegram_bot.codex_document_message(update, context)
+            self.assertIn("couldn’t save", message.reply_text.await_args.args[0].lower())
+            self.assertNotIn("private filesystem path", message.reply_text.await_args.args[0])
+            self.assertNotIn("private filesystem path", "\n".join(logs.output))
 
 
 class CodexAudioTests(unittest.IsolatedAsyncioTestCase):
