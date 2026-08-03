@@ -1,6 +1,6 @@
 # ADR 0009: Enable the Codex sandbox and scoped network approval
 
-- Status: Accepted
+- Status: Accepted; network-approval portion superseded by ADR 0017
 - Date: 2026-07-30
 
 ## Context
@@ -18,3 +18,7 @@ Enable only Codex sandbox approval prompts that carry a concrete network context
 ## Consequences
 
 Codex can inspect, edit, test, and scaffold projects—including `uv` projects—inside the mounted workspace without the namespace failure. Dependency downloads require an explicit exact-host button. Approval can expose workspace-readable information to that host, so the owner must review the destination. Commands still cannot read bot/auth/trace credentials, use Docker, publish with Git credentials, or write outside the workspace. The seccomp profile and the private SDK approval hook are pinned compatibility surfaces that must be revalidated before upgrading Docker, Bubblewrap, or `openai-codex`.
+
+## Amendment
+
+Live testing recorded in ADR 0017 found that pinned Codex 0.144.4 does not emit the expected exact-host approval while using the named permission profile: networking disabled fails before approval, networking enabled without the proxy is broad, and managed-proxy domain rules are hard policy. Generic command networking now remains disabled; the fixed API-Football gateway handles the narrower team-crest requirement.

@@ -45,8 +45,9 @@ CODEX_PERMISSION_OVERRIDES = (
     "permissions.telegram-workspace.network.enabled=false",
     'mcp_servers.api-football.command="/usr/local/bin/api-football-mcp"',
     "mcp_servers.api-football.required=true",
-    'mcp_servers.api-football.enabled_tools=["get"]',
+    'mcp_servers.api-football.enabled_tools=["get","download_team_logo"]',
     'mcp_servers.api-football.default_tools_approval_mode="auto"',
+    'mcp_servers.api-football.tools.download_team_logo.approval_mode="approve"',
     'mcp_servers.git-publish.command="/usr/local/bin/git-publish-mcp"',
     "mcp_servers.git-publish.required=true",
     'mcp_servers.git-publish.enabled_tools=["publish"]',
@@ -57,10 +58,9 @@ CODEX_PERMISSION_OVERRIDES = (
 CODEX_CAPABILITY_INSTRUCTION = (
     "A credential-safe API-Football MCP get tool is available for approved football analytics. "
     "Use that tool rather than shell networking. Never attempt to locate, read, print, or reveal its credential. "
-    "For an owner-requested public file download, use the installed curl command with the literal HTTPS URL so "
-    "the sandbox can identify the exact hostname and present the Telegram owner with an Allow once prompt. Do not "
-    "replace that command with a Python network client after a blocked request; generic network escalation is "
-    "intentionally rejected. "
+    "Use the API-Football download_team_logo tool for owner-requested team crests; it saves the official PNG under "
+    "the active project's assets/team-crests directory. Do not use curl, Python, or other shell networking for "
+    "team crests. "
     "A credential-safe Git publish MCP tool can push the one configured repository after explicit Telegram owner "
     "approval. Before using it, commit all changes, ensure the working tree is clean, and pass the exact full HEAD "
     "commit ID. When the owner asks to publish, push, or retry publication, you must call the Git publish tool "
@@ -464,6 +464,12 @@ class CodexBackend:
             session = await self._start_thread(cwd)
             self.sessions[user_id] = session
             return session
+
+    def selected_cwd(self, user_id: int, default_cwd: Path) -> Path:
+        """Return the active session directory without starting a new thread."""
+
+        session = self.sessions.get(user_id)
+        return session.cwd if session is not None else default_cwd.resolve()
 
     async def reserve_turn(self, user_id: int, default_cwd: Path) -> CodexTurnReservation:
         """Reserve one user turn before any potentially expensive input preparation."""

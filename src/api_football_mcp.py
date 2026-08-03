@@ -15,10 +15,13 @@ SERVER_NAME = "api-football"
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2025-06-18"
 TOOL_NAME = "get"
+LOGO_TOOL_NAME = "download_team_logo"
 INSTRUCTIONS = (
     "Use the get tool for approved read-only football analytics. The shared limit is 100 upstream "
-    "attempts per UTC day. Never attempt to locate, read, print, or reveal the API credential. "
-    "Odds, bookmakers, and predictions are unavailable."
+    "attempts per UTC day. Use download_team_logo to save an official team crest under the active "
+    "project's assets/team-crests directory; do not use shell networking for team crests. Never "
+    "attempt to locate, read, print, or reveal the API credential. Odds, bookmakers, and predictions "
+    "are unavailable."
 )
 
 
@@ -52,6 +55,29 @@ def _tool_definition() -> dict[str, Any]:
     }
 
 
+def _logo_tool_definition() -> dict[str, Any]:
+    return {
+        "name": LOGO_TOOL_NAME,
+        "title": "Download an official API-Football team crest",
+        "description": (
+            "Download one official PNG crest by numeric API-Football team ID into "
+            "assets/team-crests/<team_id>.png in the active project."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"team_id": {"type": "integer", "minimum": 1}},
+            "required": ["team_id"],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    }
+
+
 async def handle_request(message: object) -> dict[str, Any] | None:
     """Handle the small MCP subset used by Codex."""
 
@@ -77,13 +103,34 @@ async def handle_request(message: object) -> dict[str, Any] | None:
     if method == "ping":
         return {"jsonrpc": "2.0", "id": request_id, "result": {}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": [_tool_definition()]}}
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"tools": [_tool_definition(), _logo_tool_definition()]},
+        }
     if method == "tools/call":
         params = message.get("params")
         name = params.get("name") if isinstance(params, dict) else None
         arguments = params.get("arguments", {}) if isinstance(params, dict) else None
-        if name != TOOL_NAME or not isinstance(arguments, dict):
+        if name not in {TOOL_NAME, LOGO_TOOL_NAME} or not isinstance(arguments, dict):
             return _tool_error(request_id, "Unknown API-Football tool.")
+        if name == LOGO_TOOL_NAME:
+            team_id = arguments.get("team_id")
+            if set(arguments) != {"team_id"} or isinstance(team_id, bool) or not isinstance(team_id, int):
+                return _tool_error(request_id, "Invalid API-Football team-logo arguments.")
+            try:
+                response = await request_gateway({"method": "DOWNLOAD_TEAM_LOGO", "team_id": team_id})
+            except RuntimeError as exc:
+                return _tool_error(request_id, str(exc))
+            if not response.get("ok"):
+                return _tool_error(request_id, str(response.get("error", "API-Football logo request failed.")))
+            data = response.get("data")
+            text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"content": [{"type": "text", "text": text}], "isError": False},
+            }
         endpoint = arguments.get("endpoint")
         query = arguments.get("params", {})
         if not isinstance(endpoint, str) or not isinstance(query, dict):

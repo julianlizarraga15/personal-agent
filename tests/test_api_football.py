@@ -12,12 +12,16 @@ from unittest.mock import patch
 from api_football import (
     API_HOST,
     ALLOWED_ENDPOINTS,
+    MEDIA_HOST,
     ApiFootballError,
     ApiFootballGateway,
     DailyQuota,
     MAX_RESPONSE_BYTES,
+    _store_logo,
     _upstream_get,
+    _upstream_logo,
     redact_secret,
+    validate_logo_request,
     validate_request,
 )
 from api_football_cli import request_gateway
@@ -104,6 +108,17 @@ class ValidationTests(unittest.TestCase):
         redacted = redact_secret(value, "secret")
         self.assertNotIn("secret", json.dumps(redacted))
 
+    def test_logo_request_accepts_only_one_positive_team_id(self):
+        self.assertEqual(validate_logo_request({"method": "DOWNLOAD_TEAM_LOGO", "team_id": 435}), 435)
+        for request in (
+            {"method": "DOWNLOAD_TEAM_LOGO", "team_id": 0},
+            {"method": "DOWNLOAD_TEAM_LOGO", "team_id": True},
+            {"method": "DOWNLOAD_TEAM_LOGO", "team_id": "../435"},
+            {"method": "DOWNLOAD_TEAM_LOGO", "team_id": 435, "path": "elsewhere"},
+        ):
+            with self.subTest(request=request), self.assertRaises(ApiFootballError):
+                validate_logo_request(request)
+
 
 class UpstreamTests(unittest.TestCase):
     def setUp(self):
@@ -154,6 +169,39 @@ class UpstreamTests(unittest.TestCase):
         ) as http_error:
             _upstream_get("status", {}, "secret")
         self.assertNotIn("secret", str(http_error.exception))
+
+    def test_logo_uses_fixed_media_host_path_and_requires_png(self):
+        png = b"\x89PNG\r\n\x1a\nlogo"
+        FakeConnection.response = FakeResponse(png)
+        with patch("api_football.http.client.HTTPSConnection", FakeConnection):
+            self.assertEqual(_upstream_logo(435), png)
+        connection = FakeConnection.instance
+        self.assertEqual((connection.host, connection.port), (MEDIA_HOST, 443))
+        self.assertEqual(connection.request_call[0:2], ("GET", "/football/teams/435.png"))
+        self.assertNotIn("x-apisports-key", connection.request_call[2])
+
+        FakeConnection.response = FakeResponse(b"not a png")
+        with patch("api_football.http.client.HTTPSConnection", FakeConnection), self.assertRaisesRegex(
+            ApiFootballError, "invalid logo"
+        ):
+            _upstream_logo(435)
+
+
+class LogoStorageTests(unittest.TestCase):
+    def test_logo_is_atomically_stored_at_fixed_project_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            body = b"\x89PNG\r\n\x1a\nlogo"
+            self.assertEqual(_store_logo(project, 435, body), "assets/team-crests/435.png")
+            self.assertEqual((project / "assets/team-crests/435.png").read_bytes(), body)
+
+    def test_logo_storage_rejects_symlinked_asset_directory(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            project = Path(directory)
+            (project / "assets").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ApiFootballError, "unsafe"):
+                _store_logo(project, 435, b"\x89PNG\r\n\x1a\nlogo")
+            self.assertEqual(list(Path(outside).iterdir()), [])
 
 
 class QuotaTests(unittest.IsolatedAsyncioTestCase):
@@ -236,6 +284,36 @@ class GatewayProtocolTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "not a socket"):
                 await gateway.start()
             self.assertEqual(socket_path.read_text(), "do not replace")
+
+    async def test_logo_download_requires_active_project_and_saves_fixed_png(self):
+        png = b"\x89PNG\r\n\x1a\nlogo"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            gateway = ApiFootballGateway(
+                None,
+                socket_path=root / "gateway.sock",
+                quota=DailyQuota(root / "quota.json"),
+                logo_upstream=lambda team_id: png if team_id == 435 else b"",
+                workspace=root,
+            )
+            await self._start_or_skip(gateway)
+            try:
+                unavailable = await request_gateway(
+                    {"method": "DOWNLOAD_TEAM_LOGO", "team_id": 435}, gateway.socket_path
+                )
+                lease = gateway.bind_project(project)
+                response = await request_gateway(
+                    {"method": "DOWNLOAD_TEAM_LOGO", "team_id": 435}, gateway.socket_path
+                )
+                gateway.unbind_project(lease)
+            finally:
+                await gateway.close()
+            self.assertFalse(unavailable["ok"])
+            self.assertIn("active owner turn", unavailable["error"])
+            self.assertEqual(response["data"], {"team_id": 435, "path": "assets/team-crests/435.png"})
+            self.assertEqual((project / "assets/team-crests/435.png").read_bytes(), png)
 
 
 if __name__ == "__main__":

@@ -83,6 +83,10 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not infer or repeat an approval result", CODEX_CAPABILITY_INSTRUCTION)
         self.assertIn("unless the current tool call returned", CODEX_CAPABILITY_INSTRUCTION)
 
+    def test_team_crests_use_narrow_api_football_download_tool(self):
+        self.assertIn("download_team_logo tool", CODEX_CAPABILITY_INSTRUCTION)
+        self.assertIn("Do not use curl, Python, or other shell networking", CODEX_CAPABILITY_INSTRUCTION)
+
     async def test_one_client_starts_and_closes_once(self):
         client = FakeClient([])
         backend = CodexBackend(client)

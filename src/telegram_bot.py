@@ -730,6 +730,14 @@ def _codex_approvals(context: object) -> CodexApprovalBroker:
     return bot_data[CODEX_APPROVALS_KEY]
 
 
+def _api_football_gateway(context: object) -> ApiFootballGateway:
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", None)
+    if not isinstance(bot_data, dict) or API_FOOTBALL_GATEWAY_KEY not in bot_data:
+        raise RuntimeError("API-Football gateway is not initialized")
+    return bot_data[API_FOOTBALL_GATEWAY_KEY]
+
+
 def _git_publish_gateway(context: object) -> GitPublishGateway:
     application = getattr(context, "application", None)
     bot_data = getattr(application, "bot_data", None)
@@ -800,8 +808,8 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text(
         "Chat normally to work with Codex in the configured workspace.\n"
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
-        "If Codex needs public HTTPS access, you can allow that exact destination once with an inline button. "
-        "A configured project may also be published as one exact clean commit after a separate approval. "
+        "Generic shell networking is disabled. Official API-Football team crests can be saved through the fixed "
+        "team-logo tool, and a configured project may be published as one exact clean commit after approval. "
         "Send a photo with an optional caption for visual analysis. Voice notes and Telegram audio attachments "
         "are transcribed into the current Codex conversation. Any document is saved under telegram_uploads/ in "
         "the selected project and given to Codex to inspect; never send credentials or private keys. Codex can "
@@ -1112,6 +1120,14 @@ async def _run_codex_turn(
         except Exception:
             LOGGER.warning("Codex activity update failed user_id=%s", user_id)
 
+    backend = _codex_backend(context)
+    selected_cwd = (
+        reservation.session.cwd
+        if reservation is not None
+        else backend.selected_cwd(user_id, _workspace_root())
+    )
+    football_gateway = _api_football_gateway(context)
+    football_lease = football_gateway.bind_project(selected_cwd)
     publish_gateway = _git_publish_gateway(context)
     publish_lease = publish_gateway.bind_approval(
         lambda request: _codex_approvals(context).request_publish(
@@ -1123,7 +1139,7 @@ async def _run_codex_turn(
     )
     try:
         LOGGER.info("Codex turn started user_id=%s", user_id)
-        response = await _codex_backend(context).run_turn(
+        response = await backend.run_turn(
             user_id,
             text,
             default_cwd=_workspace_root(),
@@ -1157,6 +1173,7 @@ async def _run_codex_turn(
         final_status = "Response sent."
     finally:
         publish_gateway.unbind_approval(publish_lease)
+        football_gateway.unbind_project(football_lease)
     editor = getattr(activity_message, "edit_text", None)
     if editor is not None:
         try:
@@ -2332,7 +2349,8 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
         application.bot_data[CODEX_BACKEND_KEY] = CodexBackend()
         application.bot_data[CODEX_APPROVALS_KEY] = CodexApprovalBroker()
         application.bot_data[API_FOOTBALL_GATEWAY_KEY] = ApiFootballGateway(
-            source.get("API_FOOTBALL_KEY")
+            source.get("API_FOOTBALL_KEY"),
+            workspace=source.get("AGENT_WORKSPACE_ROOT", "/workspace"),
         )
         application.bot_data[GIT_PUBLISH_GATEWAY_KEY] = GitPublishGateway(
             source.get("GIT_PUBLISH_REPOSITORY"),

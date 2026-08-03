@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from api_football_mcp import INSTRUCTIONS, TOOL_NAME, handle_request
+from api_football_mcp import INSTRUCTIONS, LOGO_TOOL_NAME, TOOL_NAME, handle_request
 
 
 class ApiFootballMcpTests(unittest.IsolatedAsyncioTestCase):
@@ -15,9 +15,11 @@ class ApiFootballMcpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_is_read_only_and_uses_gateway_protocol(self):
         listing = await handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        tool = listing["result"]["tools"][0]
+        tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
+        tool = tools[TOOL_NAME]
         self.assertEqual(tool["name"], TOOL_NAME)
         self.assertTrue(tool["annotations"]["readOnlyHint"])
+        self.assertFalse(tools[LOGO_TOOL_NAME]["annotations"]["readOnlyHint"])
         with patch(
             "api_football_mcp.request_gateway",
             AsyncMock(return_value={"ok": True, "data": {"response": [{"name": "Liga Profesional"}]}}),
@@ -35,6 +37,23 @@ class ApiFootballMcpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(response["result"]["isError"])
         self.assertIn("Liga Profesional", response["result"]["content"][0]["text"])
+
+    async def test_logo_tool_uses_fixed_gateway_operation(self):
+        with patch(
+            "api_football_mcp.request_gateway",
+            AsyncMock(return_value={"ok": True, "data": {"team_id": 435, "path": "assets/team-crests/435.png"}}),
+        ) as gateway:
+            response = await handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": LOGO_TOOL_NAME, "arguments": {"team_id": 435}},
+                }
+            )
+        gateway.assert_awaited_once_with({"method": "DOWNLOAD_TEAM_LOGO", "team_id": 435})
+        self.assertFalse(response["result"]["isError"])
+        self.assertIn("assets/team-crests/435.png", response["result"]["content"][0]["text"])
 
     async def test_gateway_errors_are_tool_errors_without_exception_details(self):
         with patch(

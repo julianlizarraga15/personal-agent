@@ -27,7 +27,7 @@
 - Confirm `/openai-transcription-secrets` is mounted read-only, is denied inside a Codex command, and `OPENAI_API_KEY`, `OPENAI_TRANSCRIPTION_KEY_PATH`, and `OPENAI_TRANSCRIPTION_MODEL` are absent from the sanitized Codex launcher environment. Inspect logs only for content-free success/failure metadata, then confirm usage in the OpenAI dashboard.
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
 - Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
-- Ask Codex to use the API-Football MCP tool for `status`. With a key it should return status JSON without a network approval; without one it should clearly report that API-Football is not configured. Confirm sandboxed commands cannot read the key, `/trace-state`, `.env`, any Unix socket, or direct network. Use `api-football get status` only as a trusted container-side diagnostic.
+- Ask Codex to use the API-Football MCP tool for `status`. With a key it should return status JSON; without one it should clearly report that analytics are not configured. Then request one known team crest and confirm `download_team_logo` creates a valid `assets/team-crests/<id>.png` only inside the selected project. Confirm sandboxed commands cannot read the key, `/trace-state`, `.env`, any Unix socket, or direct network. Use `api-football get status` only as a trusted container-side diagnostic.
 
 ## Common failures
 

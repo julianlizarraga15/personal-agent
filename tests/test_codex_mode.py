@@ -59,12 +59,17 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_normal_agent_reply_uses_neutral_activity_status(self):
         result = CodexTurnResult(text="Could not finish the requested download.", cwd=Path.cwd())
-        backend = SimpleNamespace(run_turn=AsyncMock(return_value=result))
+        backend = SimpleNamespace(
+            run_turn=AsyncMock(return_value=result),
+            selected_cwd=Mock(return_value=Path.cwd()),
+        )
+        football_gateway = SimpleNamespace(bind_project=Mock(return_value="football-lease"), unbind_project=Mock())
         publish_gateway = SimpleNamespace(bind_approval=Mock(return_value="lease"), unbind_approval=Mock())
         context = SimpleNamespace(
             application=SimpleNamespace(
                 bot_data={
                     telegram_bot.CODEX_BACKEND_KEY: backend,
+                    telegram_bot.API_FOOTBALL_GATEWAY_KEY: football_gateway,
                     telegram_bot.GIT_PUBLISH_GATEWAY_KEY: publish_gateway,
                 }
             )
@@ -76,6 +81,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
 
         activity.edit_text.assert_awaited_with("Response sent.")
         publish_gateway.unbind_approval.assert_called_once_with("lease")
+        football_gateway.unbind_project.assert_called_once_with("football-lease")
 
     def test_compose_isolates_codex_bot(self):
         compose = Path("docker-compose.yml").read_text(encoding="utf-8")
@@ -109,11 +115,8 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('mcp_servers.git-publish.tools.publish.approval_mode="approve"', backend)
         self.assertIn("network.enabled=false", backend)
         self.assertIn('"/openai-transcription-secrets"="deny"', backend)
-        self.assertIn("installed curl command with the literal HTTPS URL", backend)
-
-        bot_image = Path("Dockerfile.bot").read_text(encoding="utf-8")
-        self.assertIn("ca-certificates curl git", bot_image)
-        self.assertIn("test -x /usr/bin/curl", bot_image)
+        self.assertIn('enabled_tools=["get","download_team_logo"]', backend)
+        self.assertIn("tools.download_team_logo.approval_mode", backend)
 
         transcription = Path("docker-compose.transcription.example.yml").read_text(encoding="utf-8")
         self.assertIn("OPENAI_TRANSCRIPTION_SECRETS_DIR", transcription)

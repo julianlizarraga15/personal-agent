@@ -1,6 +1,6 @@
 # ADR 0016: Enable approved public file downloads
 
-- Status: Accepted
+- Status: Superseded by ADR 0017
 - Date: 2026-08-03
 
 ## Context
@@ -18,3 +18,7 @@ Rename the normal final activity state from `Completed.` to `Response sent.`. Th
 ## Consequences
 
 Public asset downloads can use the existing owner-reviewed, exact-host boundary without adding a new credential or broadly enabling network access. Redirects to another hostname may require a separate approval and remain subject to sandbox policy. End-to-end acceptance requires rebuilding the bot and approving a real literal-URL `curl` request from Telegram.
+
+## Supersession note
+
+Live acceptance disproved the decision's core assumption. With the named permission profile's network disabled, `curl` failed at DNS without emitting an approval. Enabling profile networking without the managed proxy allowed broad outbound access, while enabling the proxy enforced domain rules as hard policy without emitting the expected exact-host prompt in pinned Codex 0.144.4. ADR 0017 replaces this approach with a fixed API-Football team-logo gateway operation.
