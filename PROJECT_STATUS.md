@@ -24,7 +24,7 @@ Last updated: 2026-08-03
 
 ## Last stopping point
 
-- The approved public-download fix, neutral activity status, tests, documentation, and ADR 0016 are implemented locally. The focused Codex/Telegram suite passes with 101 tests; the complete suite passes with 216 tests and four host-boundary skips. A disposable bot image build succeeded and reports `curl 8.14.1`. Live rebuild/deployment and a real Telegram crest download are still pending.
+- The approved public-download fix, neutral activity status, tests, documentation, and ADR 0016 were committed and published as `1107c09`, then deployed by rebuilding and recreating only the bot with the existing Git-publication and transcription overlays. The focused Codex/Telegram suite passes with 101 tests; the complete suite passes with 216 tests and four host-boundary skips. The live container is healthy with zero restarts on image `sha256:128d7361b28860f9bfe3c81927e5c13542af96f7c06665a3920c1e61aee832a2`; the image reports `curl 8.14.1` and contains the literal-URL download instruction. A real Telegram crest download remains pending.
 - Outbound safe workspace document delivery, tests, configuration, help text, README/architecture/security/runbook guidance, and ADR 0015 are implemented locally. The focused Codex/Telegram suite passes with 100 tests; the complete suite passes with 215 tests and four host-boundary skips. Publication and deployment have not been requested.
 - Arbitrary inbound Codex document support, focused tests, configuration, help text, operational guidance, README/architecture/security documentation, and ADR 0014 are implemented and deployed on `main`. The focused Telegram/Codex suite passes with 90 tests; the complete suite passes with 205 tests and four host-boundary skips.
 - Incoming Codex image support, tests, documentation, and ADR 0013 were committed as `3307321`, published directly to `main`, and deployed. The full local suite passes: 201 tests passed and four host-boundary tests skipped.
@@ -34,7 +34,7 @@ Last updated: 2026-08-03
 
 ## Next steps
 
-1. Rebuild and restart the bot, then retry a literal `https://media.api-sports.io/...` crest download from Telegram and confirm the exact-host **Allow once** card appears before the file is saved.
+1. Retry a literal `https://media.api-sports.io/...` crest download from Telegram and confirm the exact-host **Allow once** card appears before the file is saved.
 2. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
 3. Verify one captionless and one captioned Telegram photo end to end.
 4. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
