@@ -69,6 +69,10 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}", bot)
         self.assertIn("GIT_PUBLISH_REPOSITORY: ${GIT_PUBLISH_REPOSITORY:-}", bot)
         self.assertIn("TELEGRAM_MAX_DOCUMENT_BYTES: ${TELEGRAM_MAX_DOCUMENT_BYTES:-20000000}", bot)
+        self.assertIn(
+            "TELEGRAM_MAX_OUTPUT_DOCUMENT_BYTES: ${TELEGRAM_MAX_OUTPUT_DOCUMENT_BYTES:-50000000}",
+            bot,
+        )
         self.assertNotIn("deploy-key", bot.split("volumes:", 1)[1] if "volumes:" in bot else "")
         self.assertNotIn("DEPLOYMENT_STATE_DIR", bot)
         self.assertIn("seccomp=./security/codex-bwrap-seccomp.json", bot)
@@ -101,6 +105,9 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
 
         login = compose.split("  codex-login:", 1)[1].split("volumes:", 1)[0]
         self.assertNotIn("API_FOOTBALL_KEY", login)
+
+        env_example = Path(".env.example").read_text(encoding="utf-8")
+        self.assertIn("TELEGRAM_MAX_OUTPUT_DOCUMENT_BYTES=50000000", env_example)
 
     async def test_codex_startup_starts_gateway_before_backend_and_cleans_up_on_failure(self):
         order = []

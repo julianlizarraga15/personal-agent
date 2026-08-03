@@ -15,6 +15,7 @@ from codex_backend import (
     event_status,
     final_message_from_items,
     network_approval_request,
+    telegram_attachments_from_message,
     telegram_images_from_message,
     translate_codex_error,
 )
@@ -119,6 +120,18 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((first.cwd, second.cwd), (Path("/tmp"), Path("/tmp")))
         self.assertEqual(thread.prompts, ["one", "two"])
         self.assertEqual(len(client.start_calls), 1)
+
+    async def test_turn_result_contains_separate_image_and_file_paths(self):
+        thread = FakeThread(
+            [successful_handle("Attached.\n[[telegram_file:original.png]]\n[[telegram_image:preview.png]]")]
+        )
+        backend = CodexBackend(FakeClient([thread]))
+
+        result = await backend.run_turn(42, "send both", default_cwd=Path("/tmp"))
+
+        self.assertEqual(result.text, "Attached.")
+        self.assertEqual(result.image_paths, ("preview.png",))
+        self.assertEqual(result.file_paths, ("original.png",))
 
     async def test_image_turn_uses_validated_data_url_input(self):
         thread = FakeThread([successful_handle("described")])
@@ -259,6 +272,38 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
 
         only_marker, _ = telegram_images_from_message("[[telegram_image:plot.png]]")
         self.assertEqual(only_marker, "Here’s the image.")
+
+    def test_mixed_attachment_markers_share_one_bound_and_are_removed(self):
+        text, images, files = telegram_attachments_from_message(
+            "Ready.\n"
+            "[[telegram_file:one.png]]\n"
+            "[[telegram_image:preview.png]]\n"
+            "[[telegram_file:report.pdf]]\n"
+            "[[telegram_image:chart.jpg]]\n"
+            "[[telegram_file:bounded.zip]]"
+        )
+
+        self.assertEqual(text, "Ready.")
+        self.assertEqual(images, ("preview.png", "chart.jpg"))
+        self.assertEqual(files, ("one.png", "report.pdf"))
+        self.assertNotIn("telegram_", text)
+
+    def test_file_only_and_mixed_marker_fallback_text(self):
+        file_text, _, files = telegram_attachments_from_message("[[telegram_file:report.pdf]]")
+        mixed_text, images, mixed_files = telegram_attachments_from_message(
+            "[[telegram_image:plot.png]]\n[[telegram_file:data.csv]]"
+        )
+
+        self.assertEqual(file_text, "Here’s the file.")
+        self.assertEqual(files, ("report.pdf",))
+        self.assertEqual(mixed_text, "Here are the requested attachments.")
+        self.assertEqual(images, ("plot.png",))
+        self.assertEqual(mixed_files, ("data.csv",))
+
+    def test_capability_instruction_distinguishes_photos_and_files(self):
+        self.assertIn("[[telegram_image:path/to/image.png]]", CODEX_CAPABILITY_INSTRUCTION)
+        self.assertIn("[[telegram_file:path/to/file]]", CODEX_CAPABILITY_INSTRUCTION)
+        self.assertIn("requested originals", CODEX_CAPABILITY_INSTRUCTION)
 
     def test_error_translation_covers_operational_failures(self):
         cases = {

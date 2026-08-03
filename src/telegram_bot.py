@@ -67,6 +67,7 @@ STATUS_MESSAGES = {
 DEFAULT_IMAGE_PROMPT = "Describe this image and call out any visible text, errors, or actionable details."
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_OUTPUT_IMAGE_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_OUTPUT_DOCUMENT_BYTES = 50_000_000
 DEFAULT_MAX_AUDIO_BYTES = 20_000_000
 DEFAULT_MAX_DOCUMENT_BYTES = 20_000_000
 DEFAULT_MAX_AUDIO_SECONDS = 600
@@ -804,7 +805,7 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Send a photo with an optional caption for visual analysis. Voice notes and Telegram audio attachments "
         "are transcribed into the current Codex conversation. Any document is saved under telegram_uploads/ in "
         "the selected project and given to Codex to inspect; never send credentials or private keys. Codex can "
-        "also send images it creates in the selected workspace."
+        "also send images it creates as photos, or safe workspace files as documents when you ask for them."
     )
 
 
@@ -1142,10 +1143,16 @@ async def _run_codex_turn(
         LOGGER.info("Codex turn completed user_id=%s", user_id)
         await _reply_agent_response(message, response.text)
         failed_images = await _reply_codex_images(message, response)
+        failed_files = await _reply_codex_files(message, response)
         if failed_images:
             await message.reply_text(
                 "I completed the request, but couldn’t attach one or more images. "
                 "The image must be a valid PNG, JPEG, WEBP, or static GIF inside the selected project and within the size limit."
+            )
+        if failed_files:
+            await message.reply_text(
+                "I completed the request, but couldn’t attach one or more files. "
+                "Each file must be safe, readable, inside the selected project, and within the size limit."
             )
         final_status = "Completed."
     finally:
@@ -1176,18 +1183,36 @@ def _max_output_image_bytes() -> int:
     return _positive_env_int("TELEGRAM_MAX_OUTPUT_IMAGE_BYTES", DEFAULT_MAX_OUTPUT_IMAGE_BYTES)
 
 
-def _codex_image_bytes(cwd: Path, requested_path: str) -> tuple[BytesIO, str]:
-    """Open one verified image without allowing delivery outside the selected project."""
+def _max_output_document_bytes() -> int:
+    return _positive_env_int("TELEGRAM_MAX_OUTPUT_DOCUMENT_BYTES", DEFAULT_MAX_OUTPUT_DOCUMENT_BYTES)
 
-    root = cwd.resolve()
+
+def _resolved_output_file(cwd: Path, requested_path: str, *, allow_env_example: bool = False) -> Path:
+    """Resolve one regular file without allowing access outside the selected project."""
+
+    root = cwd.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("selected project is not a directory")
     candidate = Path(requested_path)
     if not candidate.is_absolute():
         candidate = root / candidate
     resolved = candidate.resolve(strict=True)
     if not resolved.is_relative_to(root) or not resolved.is_file():
-        raise ValueError("image path is outside the selected project")
-    if any(part == ".env" or part.startswith(".env.") for part in resolved.parts):
+        raise ValueError("attachment is outside the selected project or not a regular file")
+    relative_parts = resolved.relative_to(root).parts
+    if any(
+        (part == ".env" or part.startswith(".env."))
+        and not (allow_env_example and index == len(relative_parts) - 1 and part == ".env.example")
+        for index, part in enumerate(relative_parts)
+    ):
         raise ValueError("protected environment path")
+    return resolved
+
+
+def _codex_image_bytes(cwd: Path, requested_path: str) -> tuple[BytesIO, str]:
+    """Open one verified image without allowing delivery outside the selected project."""
+
+    resolved = _resolved_output_file(cwd, requested_path)
     max_bytes = _max_output_image_bytes()
     if resolved.stat().st_size > max_bytes:
         raise ValueError("image exceeds output size limit")
@@ -1198,6 +1223,22 @@ def _codex_image_bytes(cwd: Path, requested_path: str) -> tuple[BytesIO, str]:
     image = BytesIO(data)
     image.name = resolved.name
     return image, media_type
+
+
+def _codex_file_bytes(cwd: Path, requested_path: str) -> BytesIO:
+    """Open one safe workspace file for Telegram document delivery."""
+
+    resolved = _resolved_output_file(cwd, requested_path, allow_env_example=True)
+    max_bytes = _max_output_document_bytes()
+    if resolved.stat().st_size > max_bytes:
+        raise ValueError("document exceeds output size limit")
+    data = resolved.read_bytes()
+    if len(data) > max_bytes:
+        raise ValueError("document exceeds output size limit")
+    _validate_upload_credentials(resolved.name, data)
+    document = BytesIO(data)
+    document.name = resolved.name
+    return document
 
 
 async def _reply_codex_images(message: object, result: CodexTurnResult) -> int:
@@ -1217,6 +1258,20 @@ async def _reply_codex_images(message: object, result: CodexTurnResult) -> int:
         except Exception as exc:
             failures += 1
             LOGGER.warning("Codex image delivery failed error_type=%s", type(exc).__name__)
+    return failures
+
+
+async def _reply_codex_files(message: object, result: CodexTurnResult) -> int:
+    """Deliver safe workspace files as documents, returning the failure count."""
+
+    failures = 0
+    for requested_path in result.file_paths:
+        try:
+            document = _codex_file_bytes(result.cwd, requested_path)
+            await message.reply_document(document=document, filename=document.name)  # type: ignore[attr-defined]
+        except Exception as exc:
+            failures += 1
+            LOGGER.warning("Codex file delivery failed error_type=%s", type(exc).__name__)
     return failures
 
 

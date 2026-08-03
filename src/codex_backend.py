@@ -64,14 +64,18 @@ CODEX_CAPABILITY_INSTRUCTION = (
     "that publication was attempted, approved, rejected, or completed unless the current tool call returned that "
     "outcome. If the tool cannot be called, report that it is unavailable. Never try to obtain or use the deploy key "
     "directly. "
-    "When the user asks you to send an image you created in the workspace through Telegram, include one "
-    "standalone line per image at the end of the final response in exactly this form: "
-    "[[telegram_image:path/to/image.png]]. Use a path inside the current workspace or selected project. "
-    "Do not use this marker for files the user did not ask to receive."
+    "When the user asks you to send an image displayed as a Telegram photo, include one standalone line per "
+    "image at the end of the final response in exactly this form: [[telegram_image:path/to/image.png]]. When "
+    "the user asks for a file or document, or says to send something as files, use one standalone line per file "
+    "in exactly this form: [[telegram_file:path/to/file]]. Send the requested originals individually instead of "
+    "creating an archive solely to work around delivery limitations. Use paths inside the current workspace or "
+    "selected project, and do not use either marker for items the user did not ask to receive."
 )
 
-_TELEGRAM_IMAGE_RE = re.compile(r"^[ \t]*\[\[telegram_image:(.+?)\]\][ \t]*$", re.MULTILINE)
-MAX_TELEGRAM_IMAGES_PER_TURN = 4
+_TELEGRAM_ATTACHMENT_RE = re.compile(
+    r"^[ \t]*\[\[telegram_(image|file):(.+?)\]\][ \t]*$", re.MULTILINE
+)
+MAX_TELEGRAM_ATTACHMENTS_PER_TURN = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,11 +262,12 @@ class CodexImageInput:
 
 @dataclass(frozen=True, slots=True)
 class CodexTurnResult:
-    """Completed text plus workspace image paths requested for Telegram delivery."""
+    """Completed text plus workspace paths requested for Telegram delivery."""
 
     text: str
     cwd: Path
     image_paths: tuple[str, ...] = ()
+    file_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -320,19 +325,38 @@ def final_message_from_items(items: list[Any]) -> str | None:
     return fallback
 
 
-def telegram_images_from_message(text: str) -> tuple[str, tuple[str, ...]]:
-    """Remove bounded image-delivery markers from a completed agent message."""
+def telegram_attachments_from_message(text: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Remove delivery markers and return at most four requested attachments."""
 
-    paths: list[str] = []
+    image_paths: list[str] = []
+    file_paths: list[str] = []
+    attachment_count = 0
 
     def remove_marker(match: re.Match[str]) -> str:
-        path = match.group(1).strip()
-        if path and len(paths) < MAX_TELEGRAM_IMAGES_PER_TURN:
-            paths.append(path)
+        nonlocal attachment_count
+        kind = match.group(1)
+        path = match.group(2).strip()
+        if path and attachment_count < MAX_TELEGRAM_ATTACHMENTS_PER_TURN:
+            (image_paths if kind == "image" else file_paths).append(path)
+            attachment_count += 1
         return ""
 
-    visible = _TELEGRAM_IMAGE_RE.sub(remove_marker, text).strip()
-    return visible or "Here’s the image.", tuple(paths)
+    visible = _TELEGRAM_ATTACHMENT_RE.sub(remove_marker, text).strip()
+    if not visible:
+        if image_paths and not file_paths:
+            visible = "Here’s the image."
+        elif file_paths and not image_paths:
+            visible = "Here’s the file."
+        else:
+            visible = "Here are the requested attachments."
+    return visible, tuple(image_paths), tuple(file_paths)
+
+
+def telegram_images_from_message(text: str) -> tuple[str, tuple[str, ...]]:
+    """Backward-compatible image-only view of Telegram delivery markers."""
+
+    visible, image_paths, _ = telegram_attachments_from_message(text)
+    return visible, image_paths
 
 
 def translate_codex_error(exc: BaseException) -> CodexBackendError:
@@ -554,5 +578,10 @@ class CodexBackend:
         response = final_message_from_items(completed_items)
         if response is None:
             raise CodexBackendError("Codex finished without returning a response. Please try again.")
-        visible_text, image_paths = telegram_images_from_message(response)
-        return CodexTurnResult(text=visible_text, cwd=session.cwd, image_paths=image_paths)
+        visible_text, image_paths, file_paths = telegram_attachments_from_message(response)
+        return CodexTurnResult(
+            text=visible_text,
+            cwd=session.cwd,
+            image_paths=image_paths,
+            file_paths=file_paths,
+        )

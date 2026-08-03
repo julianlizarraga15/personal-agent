@@ -22,11 +22,13 @@ from telegram_bot import (
     ConversationSession,
     PendingApproval,
     WorkerExecutionError,
+    _codex_file_bytes,
     _codex_image_bytes,
     _deployment_report,
     _monitor_deployment,
     _queued_deployment,
     _reply_agent_response,
+    _reply_codex_files,
     _reply_codex_images,
     _telegram_html,
     _validate_image,
@@ -345,6 +347,129 @@ class CodexOutputImageTests(unittest.IsolatedAsyncioTestCase):
                 _codex_image_bytes(root, "bad.png")
             with self.assertRaises(ValueError):
                 _codex_image_bytes(root, "../outside.png")
+
+
+class CodexOutputFileTests(unittest.IsolatedAsyncioTestCase):
+    PNG = CodexOutputImageTests.PNG
+
+    async def test_two_png_files_are_sent_byte_exactly_as_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first.png").write_bytes(self.PNG)
+            (root / "second.png").write_bytes(self.PNG + b"second")
+            result = CodexTurnResult(
+                "Files attached.", root, file_paths=("first.png", "second.png")
+            )
+            message = SimpleNamespace(reply_photo=AsyncMock(), reply_document=AsyncMock())
+
+            failures = await _reply_codex_files(message, result)
+
+        self.assertEqual(failures, 0)
+        self.assertEqual(message.reply_document.await_count, 2)
+        self.assertEqual(
+            [call.kwargs["filename"] for call in message.reply_document.await_args_list],
+            ["first.png", "second.png"],
+        )
+        self.assertEqual(
+            [call.kwargs["document"].getvalue() for call in message.reply_document.await_args_list],
+            [self.PNG, self.PNG + b"second"],
+        )
+        message.reply_photo.assert_not_awaited()
+
+    async def test_arbitrary_regular_files_are_sent_as_documents(self) -> None:
+        payloads = {
+            "report.pdf": b"%PDF-1.7\n",
+            "source.py": b"print('safe')\n",
+            "bundle.zip": b"PK\x03\x04archive",
+            "payload.bin": b"\x00\xff\x10",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, data in payloads.items():
+                (root / name).write_bytes(data)
+            result = CodexTurnResult("Attached.", root, file_paths=tuple(payloads))
+            message = SimpleNamespace(reply_photo=AsyncMock(), reply_document=AsyncMock())
+
+            failures = await _reply_codex_files(message, result)
+
+        self.assertEqual(failures, 0)
+        self.assertEqual(
+            [call.kwargs["document"].getvalue() for call in message.reply_document.await_args_list],
+            list(payloads.values()),
+        )
+        message.reply_photo.assert_not_awaited()
+
+    def test_file_rejects_missing_directory_outside_and_protected_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "project"
+            root.mkdir()
+            (root / "folder").mkdir()
+            (base / "outside.bin").write_bytes(b"outside")
+            for name, data in {
+                ".env": b"VALUE=secret",
+                ".env.local": b"VALUE=secret",
+                "auth.json": b"{}",
+                "deploy.pem": b"certificate-like",
+                "notes.txt": b"-----BEGIN PRIVATE KEY-----\nsecret",
+            }.items():
+                (root / name).write_bytes(data)
+
+            rejected = [
+                "missing.bin",
+                "folder",
+                "../outside.bin",
+                ".env",
+                ".env.local",
+                "auth.json",
+                "deploy.pem",
+                "notes.txt",
+            ]
+            for requested_path in rejected:
+                with self.subTest(requested_path=requested_path), self.assertRaises((ValueError, FileNotFoundError)):
+                    _codex_file_bytes(root, requested_path)
+
+            (root / ".env.example").write_bytes(b"PLACEHOLDER=value")
+            self.assertEqual(_codex_file_bytes(root, ".env.example").getvalue(), b"PLACEHOLDER=value")
+
+    def test_file_rejects_oversized_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"TELEGRAM_MAX_OUTPUT_DOCUMENT_BYTES": "3"}
+        ):
+            root = Path(directory)
+            (root / "large.bin").write_bytes(b"four")
+
+            with self.assertRaises(ValueError):
+                _codex_file_bytes(root, "large.bin")
+
+    async def test_failed_delivery_is_content_free_in_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret_path = "missing-sensitive-name.txt"
+            result = CodexTurnResult("Attached.", root, file_paths=(secret_path,))
+            message = SimpleNamespace(reply_document=AsyncMock())
+
+            with self.assertLogs("telegram_bot", level="WARNING") as captured:
+                failures = await _reply_codex_files(message, result)
+
+        self.assertEqual(failures, 1)
+        self.assertNotIn(secret_path, "\n".join(captured.output))
+
+    async def test_telegram_document_failure_is_content_free(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            requested_path = "sensitive-report.bin"
+            (root / requested_path).write_bytes(b"safe bytes")
+            result = CodexTurnResult("Attached.", root, file_paths=(requested_path,))
+            message = SimpleNamespace(reply_document=AsyncMock(side_effect=RuntimeError("remote rejected")))
+
+            with self.assertLogs("telegram_bot", level="WARNING") as captured:
+                failures = await _reply_codex_files(message, result)
+
+        self.assertEqual(failures, 1)
+        log_text = "\n".join(captured.output)
+        self.assertNotIn(requested_path, log_text)
+        self.assertNotIn("remote rejected", log_text)
 
 
 class DeploymentReportingTests(unittest.IsolatedAsyncioTestCase):
