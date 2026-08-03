@@ -1154,7 +1154,7 @@ async def _run_codex_turn(
                 "I completed the request, but couldn’t attach one or more files. "
                 "Each file must be safe, readable, inside the selected project, and within the size limit."
             )
-        final_status = "Completed."
+        final_status = "Response sent."
     finally:
         publish_gateway.unbind_approval(publish_lease)
     editor = getattr(activity_message, "edit_text", None)

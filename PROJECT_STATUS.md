@@ -4,6 +4,7 @@ Last updated: 2026-08-03
 
 ## Current state
 
+- Owner-requested public file downloads now have a concrete exact-host approval path: the bot image includes `curl`, and Codex is instructed to use literal HTTPS URLs so the sandbox can present the Telegram **Allow once** card. Generic Python networking and broad escalation remain blocked. A normal returned answer now ends with the neutral activity label `Response sent.` rather than claiming the task was completed.
 - The default Telegram backend uses pinned `openai-codex==0.144.4`, ephemeral in-memory threads, a named Bubblewrap workspace permission profile, and a sanitized launcher. Telegram photos remain validated in-memory Codex SDK image inputs, and voice/audio attachments remain validated transcription inputs. Any explicit Telegram document is atomically persisted byte-for-byte under `telegram_uploads/` in the selected project and submitted to Codex by its untrusted relative workspace path. Upload admission is turn-reserved, capped at 20,000,000 bytes by default, and rejects traversal, symlinked inboxes, protected `.env` variants, recognizable credential/private-key files, and private-key content.
 - Codex final responses now distinguish photo-style `telegram_image` markers from document-only `telegram_file` markers. Both marker types are removed from visible text and share a four-attachment turn cap. Requested documents preserve original filenames and bytes, are limited to 50,000,000 bytes by default, remain confined to regular files beneath the selected project, and reject protected environment or credential/private-key material.
 - Repository-scoped publication is configured for `/workspace/mental-models`, `git@github.com:julianlizarraga15/mental-models.git`, and `main`. Its dedicated deploy key and verified `known_hosts` live outside the workspace and are mounted read-only at `/git-publish-secrets`; Codex and project commands cannot read them.
@@ -23,6 +24,7 @@ Last updated: 2026-08-03
 
 ## Last stopping point
 
+- The approved public-download fix, neutral activity status, tests, documentation, and ADR 0016 are implemented locally. The focused Codex/Telegram suite passes with 101 tests; the complete suite passes with 216 tests and four host-boundary skips. A disposable bot image build succeeded and reports `curl 8.14.1`. Live rebuild/deployment and a real Telegram crest download are still pending.
 - Outbound safe workspace document delivery, tests, configuration, help text, README/architecture/security/runbook guidance, and ADR 0015 are implemented locally. The focused Codex/Telegram suite passes with 100 tests; the complete suite passes with 215 tests and four host-boundary skips. Publication and deployment have not been requested.
 - Arbitrary inbound Codex document support, focused tests, configuration, help text, operational guidance, README/architecture/security documentation, and ADR 0014 are implemented and deployed on `main`. The focused Telegram/Codex suite passes with 90 tests; the complete suite passes with 205 tests and four host-boundary skips.
 - Incoming Codex image support, tests, documentation, and ADR 0013 were committed as `3307321`, published directly to `main`, and deployed. The full local suite passes: 201 tests passed and four host-boundary tests skipped.
@@ -32,11 +34,12 @@ Last updated: 2026-08-03
 
 ## Next steps
 
-1. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
-2. Verify one captionless and one captioned Telegram photo end to end.
-3. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
-4. From Telegram, request publication of the existing `mental-models` commit, confirm the fixed remote/branch/commit card, approve once, and verify GitHub `main` reaches `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
-5. Record the end-to-end results here. If any fail, use content-free bot logs and the Codex runtime log rather than inferring the failure layer from model prose.
+1. Rebuild and restart the bot, then retry a literal `https://media.api-sports.io/...` crest download from Telegram and confirm the exact-host **Allow once** card appears before the file is saved.
+2. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
+3. Verify one captionless and one captioned Telegram photo end to end.
+4. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
+5. From Telegram, request publication of the existing `mental-models` commit, confirm the fixed remote/branch/commit card, approve once, and verify GitHub `main` reaches `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
+6. Record the end-to-end results here. If any fail, use content-free bot logs and the Codex runtime log rather than inferring the failure layer from model prose.
 
 ## Assumptions and risks
 

@@ -57,6 +57,10 @@ CODEX_PERMISSION_OVERRIDES = (
 CODEX_CAPABILITY_INSTRUCTION = (
     "A credential-safe API-Football MCP get tool is available for approved football analytics. "
     "Use that tool rather than shell networking. Never attempt to locate, read, print, or reveal its credential. "
+    "For an owner-requested public file download, use the installed curl command with the literal HTTPS URL so "
+    "the sandbox can identify the exact hostname and present the Telegram owner with an Allow once prompt. Do not "
+    "replace that command with a Python network client after a blocked request; generic network escalation is "
+    "intentionally rejected. "
     "A credential-safe Git publish MCP tool can push the one configured repository after explicit Telegram owner "
     "approval. Before using it, commit all changes, ensure the working tree is clean, and pass the exact full HEAD "
     "commit ID. When the owner asks to publish, push, or retry publication, you must call the Git publish tool "

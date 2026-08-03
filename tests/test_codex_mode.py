@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, MessageReactionHandler
 
 import telegram_bot
-from codex_backend import CodexBusyError, CodexTurnReservation, NetworkApprovalRequest
+from codex_backend import CodexBusyError, CodexTurnReservation, CodexTurnResult, NetworkApprovalRequest
 
 
 class CodexModeTests(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +57,26 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "AGENT_BACKEND"):
             telegram_bot.selected_backend({"AGENT_BACKEND": "unknown"})
 
+    async def test_normal_agent_reply_uses_neutral_activity_status(self):
+        result = CodexTurnResult(text="Could not finish the requested download.", cwd=Path.cwd())
+        backend = SimpleNamespace(run_turn=AsyncMock(return_value=result))
+        publish_gateway = SimpleNamespace(bind_approval=Mock(return_value="lease"), unbind_approval=Mock())
+        context = SimpleNamespace(
+            application=SimpleNamespace(
+                bot_data={
+                    telegram_bot.CODEX_BACKEND_KEY: backend,
+                    telegram_bot.GIT_PUBLISH_GATEWAY_KEY: publish_gateway,
+                }
+            )
+        )
+        message = SimpleNamespace(chat_id=42, reply_text=AsyncMock())
+        activity = SimpleNamespace(edit_text=AsyncMock())
+
+        await telegram_bot._run_codex_turn(message, context, 42, "download it", activity_message=activity)
+
+        activity.edit_text.assert_awaited_with("Response sent.")
+        publish_gateway.unbind_approval.assert_called_once_with("lease")
+
     def test_compose_isolates_codex_bot(self):
         compose = Path("docker-compose.yml").read_text(encoding="utf-8")
         bot = compose.split("  bot:", 1)[1].split("  deployer:", 1)[0]
@@ -89,6 +109,11 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('mcp_servers.git-publish.tools.publish.approval_mode="approve"', backend)
         self.assertIn("network.enabled=false", backend)
         self.assertIn('"/openai-transcription-secrets"="deny"', backend)
+        self.assertIn("installed curl command with the literal HTTPS URL", backend)
+
+        bot_image = Path("Dockerfile.bot").read_text(encoding="utf-8")
+        self.assertIn("ca-certificates curl git", bot_image)
+        self.assertIn("test -x /usr/bin/curl", bot_image)
 
         transcription = Path("docker-compose.transcription.example.yml").read_text(encoding="utf-8")
         self.assertIn("OPENAI_TRANSCRIPTION_SECRETS_DIR", transcription)
