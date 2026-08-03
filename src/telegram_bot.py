@@ -45,6 +45,8 @@ from codex_backend import (
 from deployment import DeploymentManifest, TERMINAL_REPORT_STATUSES
 from git_publish import GitPublishApproval, GitPublishGateway
 from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, redact
+from public_download import DEFAULT_MAX_BYTES as DEFAULT_PUBLIC_DOWNLOAD_MAX_BYTES
+from public_download import DownloadApproval, PublicDownloadGateway
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
 
 
@@ -53,6 +55,7 @@ CODEX_BACKEND_KEY = "codex_backend"
 CODEX_APPROVALS_KEY = "codex_approvals"
 API_FOOTBALL_GATEWAY_KEY = "api_football_gateway"
 GIT_PUBLISH_GATEWAY_KEY = "git_publish_gateway"
+PUBLIC_DOWNLOAD_GATEWAY_KEY = "public_download_gateway"
 CODEX_STATUS_DEBOUNCE_SECONDS = 1.5
 CODEX_APPROVAL_TIMEOUT_SECONDS = 300
 
@@ -435,6 +438,66 @@ class CodexApprovalBroker:
                         LOGGER.debug("Codex publication approval finalization failed", exc_info=True)
         return approved
 
+    async def request_download(
+        self,
+        bot: object,
+        chat_id: int,
+        user_id: int,
+        request: DownloadApproval,
+    ) -> bool:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        token = secrets.token_hex(8)
+        future = asyncio.get_running_loop().create_future()
+        pending = CodexPendingApproval(token, user_id, request.display_destination, future)
+        self.pending[token] = pending
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Download once", callback_data=f"codex-download:{token}:allow"),
+                InlineKeyboardButton("Reject", callback_data=f"codex-download:{token}:reject"),
+            ]]
+        )
+        prompt = (
+            "Codex wants to download one public file.\n"
+            f"Source: {request.url}\n"
+            f"Project path: {request.destination}\n"
+            f"Maximum size: {_document_size_limit_text(request.max_bytes)}\n"
+            "The destination must not already exist.\n"
+            "The request sends no credentials. Downloaded bytes are untrusted and will not be opened or executed automatically."
+        )
+        result = "Download rejected."
+        outcome = "rejected"
+        try:
+            LOGGER.info("public download approval sending user_id=%s chat_id=%s", user_id, chat_id)
+            pending.prompt_message = await bot.send_message(  # type: ignore[attr-defined]
+                chat_id=chat_id,
+                text=prompt,
+                reply_markup=keyboard,
+            )
+            approved = await asyncio.wait_for(asyncio.shield(future), CODEX_APPROVAL_TIMEOUT_SECONDS)
+            result = "Download approved once." if approved else "Download rejected."
+            outcome = "approved" if approved else "rejected"
+        except TimeoutError:
+            approved = False
+            result = "Download approval expired."
+            outcome = "expired"
+        except Exception:
+            LOGGER.warning("public download approval failed user_id=%s", user_id, exc_info=True)
+            approved = False
+            result = "Download rejected."
+            outcome = "delivery_failed"
+        finally:
+            self.pending.pop(token, None)
+            LOGGER.info("public download approval finished user_id=%s outcome=%s", user_id, outcome)
+            if pending.prompt_message is not None:
+                editor = getattr(pending.prompt_message, "edit_text", None)
+                if editor is not None:
+                    try:
+                        await editor(f"{result}\nSource: {request.url}\nProject path: {request.destination}")
+                    except Exception:
+                        LOGGER.debug("public download approval finalization failed", exc_info=True)
+        return approved
+
     def resolve(self, token: str, user_id: int, approved: bool) -> bool:
         pending = self.pending.get(token)
         if pending is None or pending.user_id != user_id or pending.future.done():
@@ -746,6 +809,14 @@ def _git_publish_gateway(context: object) -> GitPublishGateway:
     return bot_data[GIT_PUBLISH_GATEWAY_KEY]
 
 
+def _public_download_gateway(context: object) -> PublicDownloadGateway:
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", None)
+    if not isinstance(bot_data, dict) or PUBLIC_DOWNLOAD_GATEWAY_KEY not in bot_data:
+        raise RuntimeError("Public download gateway is not initialized")
+    return bot_data[PUBLIC_DOWNLOAD_GATEWAY_KEY]
+
+
 def _workspace_root() -> Path:
     return Path(os.environ.get("AGENT_WORKSPACE_ROOT", "/workspace")).resolve()
 
@@ -808,8 +879,9 @@ async def codex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text(
         "Chat normally to work with Codex in the configured workspace.\n"
         "/project <directory-name> starts fresh in that project, /new starts fresh at the workspace root, and /stop interrupts and discards the current session.\n"
-        "Generic shell networking is disabled. Official API-Football team crests can be saved through the fixed "
-        "team-logo tool, and a configured project may be published as one exact clean commit after approval. "
+        "Generic shell networking is disabled. Public HTTPS files can be downloaded into the selected project "
+        "after one-time approval; official API-Football team crests also have a fixed tool. A configured project "
+        "may be published as one exact clean commit after approval. "
         "Send a photo with an optional caption for visual analysis. Voice notes and Telegram audio attachments "
         "are transcribed into the current Codex conversation. Any document is saved under telegram_uploads/ in "
         "the selected project and given to Codex to inspect; never send credentials or private keys. Codex can "
@@ -824,13 +896,19 @@ async def codex_network_approval(update: Update, context: ContextTypes.DEFAULT_T
         return
     data = query.data or ""
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] not in {"codex-net", "codex-publish"} or parts[2] not in {"allow", "reject"}:
+    if (
+        len(parts) != 3
+        or parts[0] not in {"codex-net", "codex-publish", "codex-download"}
+        or parts[2] not in {"allow", "reject"}
+    ):
         await query.answer("This approval is invalid.", show_alert=True)
         return
     resolved = _codex_approvals(context).resolve(parts[1], user.id, parts[2] == "allow")
     if resolved:
         if parts[0] == "codex-publish" and parts[2] == "allow":
             await query.answer("Publication approved once.")
+        elif parts[0] == "codex-download" and parts[2] == "allow":
+            await query.answer("Download approved once.")
         else:
             await query.answer("Allowed once." if parts[2] == "allow" else "Rejected.")
     else:
@@ -1128,6 +1206,16 @@ async def _run_codex_turn(
     )
     football_gateway = _api_football_gateway(context)
     football_lease = football_gateway.bind_project(selected_cwd)
+    download_gateway = _public_download_gateway(context)
+    download_lease = download_gateway.bind_turn(
+        selected_cwd,
+        lambda request: _codex_approvals(context).request_download(
+            context.bot,
+            message.chat_id,
+            user_id,
+            request,
+        ),
+    )
     publish_gateway = _git_publish_gateway(context)
     publish_lease = publish_gateway.bind_approval(
         lambda request: _codex_approvals(context).request_publish(
@@ -1173,6 +1261,7 @@ async def _run_codex_turn(
         final_status = "Response sent."
     finally:
         publish_gateway.unbind_approval(publish_lease)
+        download_gateway.unbind_turn(download_lease)
         football_gateway.unbind_project(football_lease)
     editor = getattr(activity_message, "edit_text", None)
     if editor is not None:
@@ -2294,11 +2383,18 @@ async def start_codex_application(application: object) -> None:
     from telegram import BotCommand
 
     gateway = application.bot_data[API_FOOTBALL_GATEWAY_KEY]  # type: ignore[attr-defined]
+    download_gateway = application.bot_data[PUBLIC_DOWNLOAD_GATEWAY_KEY]  # type: ignore[attr-defined]
     publish_gateway = application.bot_data[GIT_PUBLISH_GATEWAY_KEY]  # type: ignore[attr-defined]
     await gateway.start()
     try:
+        await download_gateway.start()
+    except Exception:
+        await gateway.close()
+        raise
+    try:
         await publish_gateway.start()
     except Exception:
+        await download_gateway.close()
         await gateway.close()
         raise
     backend = application.bot_data[CODEX_BACKEND_KEY]  # type: ignore[attr-defined]
@@ -2306,6 +2402,7 @@ async def start_codex_application(application: object) -> None:
         await backend.start()
     except Exception:
         await publish_gateway.close()
+        await download_gateway.close()
         await gateway.close()
         raise
     await application.bot.set_my_commands(  # type: ignore[attr-defined]
@@ -2325,6 +2422,7 @@ async def stop_codex_application(application: object) -> None:
         broker.cancel_user(pending.user_id)
     await application.bot_data[CODEX_BACKEND_KEY].close()  # type: ignore[attr-defined]
     await application.bot_data[GIT_PUBLISH_GATEWAY_KEY].close()  # type: ignore[attr-defined]
+    await application.bot_data[PUBLIC_DOWNLOAD_GATEWAY_KEY].close()  # type: ignore[attr-defined]
     await application.bot_data[API_FOOTBALL_GATEWAY_KEY].close()  # type: ignore[attr-defined]
 
 
@@ -2352,6 +2450,18 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
             source.get("API_FOOTBALL_KEY"),
             workspace=source.get("AGENT_WORKSPACE_ROOT", "/workspace"),
         )
+        try:
+            public_download_max_bytes = int(
+                source.get("PUBLIC_DOWNLOAD_MAX_BYTES", str(DEFAULT_PUBLIC_DOWNLOAD_MAX_BYTES))
+            )
+        except ValueError:
+            public_download_max_bytes = DEFAULT_PUBLIC_DOWNLOAD_MAX_BYTES
+        if not 0 < public_download_max_bytes <= DEFAULT_PUBLIC_DOWNLOAD_MAX_BYTES:
+            public_download_max_bytes = DEFAULT_PUBLIC_DOWNLOAD_MAX_BYTES
+        application.bot_data[PUBLIC_DOWNLOAD_GATEWAY_KEY] = PublicDownloadGateway(
+            workspace=source.get("AGENT_WORKSPACE_ROOT", "/workspace"),
+            max_bytes=public_download_max_bytes,
+        )
         application.bot_data[GIT_PUBLISH_GATEWAY_KEY] = GitPublishGateway(
             source.get("GIT_PUBLISH_REPOSITORY"),
             source.get("GIT_PUBLISH_REMOTE"),
@@ -2365,7 +2475,9 @@ def build_application(environ: dict[str, str] | None = None) -> Application:
         application.add_handler(CommandHandler("new", codex_new_session))
         application.add_handler(CommandHandler("stop", codex_stop_session))
         application.add_handler(CommandHandler(["help", "start"], codex_help_command))
-        application.add_handler(CallbackQueryHandler(codex_network_approval, pattern=r"^codex-(?:net|publish):"))
+        application.add_handler(
+            CallbackQueryHandler(codex_network_approval, pattern=r"^codex-(?:net|publish|download):")
+        )
         application.add_handler(MessageHandler(filters.PHOTO, codex_media_message))
         audio_filter = filters.VOICE | filters.AUDIO
         application.add_handler(MessageHandler(audio_filter, codex_audio_message))

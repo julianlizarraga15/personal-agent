@@ -12,6 +12,7 @@ Last updated: 2026-08-03
 - The gateway rechecks the worktree after approval, creates a bounded bundle in a credential-free networkless Bubblewrap, imports it into a fresh bare repository, and performs an exact non-force GitHub SSH push with hooks, inherited Git configuration, credential helpers, interactive authentication, and password authentication disabled.
 - Approval cards are sent directly through the bot to the owner chat. Delivery, resolution, expiry, and MCP completion are logged without message contents or credentials.
 - API-Football analytics and official team-logo downloads are available through the separate keyless MCP/fixed-gateway boundary with a shared protected 100-attempt UTC daily counter. Project shell networking remains disabled.
+- ADR 0018 adds a separate generic `download_file(url, destination)` MCP/gateway boundary for credential-free public HTTPS files. Every request requires a fresh owner-only **Download once** decision showing the exact initial URL, project-relative destination, and size ceiling. DNS/public-address validation and connection pinning block SSRF/rebinding, cross-host redirects require a new explicit URL, responses are bounded, and writes are atomic and symlink-resistant. Project shell networking remains disabled.
 - The optional Docker-authorized deployer remains disabled behind the `manual-deployer` profile; deployment is host-managed.
 
 ## Publication incident and resolution
@@ -24,6 +25,7 @@ Last updated: 2026-08-03
 
 ## Last stopping point
 
+- The generic public-download gateway, keyless MCP adapter, Telegram approval flow, active-project binding, 50 MB hard ceiling with lower configuration, tests, runtime configuration, help text, documentation, and ADR 0018 are implemented. The focused download/Codex/Telegram suite passes with 118 tests and one host-boundary skip; the complete suite passes with 238 tests and six host-boundary skips. A disposable image build succeeded, and its hardened downloader fetched and atomically stored the 559-byte `https://example.com/` response with SHA-256 `ff67a9d764d6a2367a187734e697f6a53217db9a21c101d410a113ca871a299d`; the temporary probe was removed. Publication, deployment, and live Telegram acceptance are pending.
 - The earlier `curl` fix was published as `1107c09` and deployed, but its live retry failed. The replacement fixed team-logo gateway, active-project binding, MCP tool, tests, documentation, and ADR 0017 were published as `bedf2cc` and deployed. The focused suite passes with 122 tests and three host-boundary skips; the complete suite passes with 222 tests and five host-boundary skips. The gateway downloaded all eight required 150×150 PNG crests into the selected analysis project, and the crest-enhanced combined chart plus both social cards were regenerated and visually inspected.
 - Outbound safe workspace document delivery, tests, configuration, help text, README/architecture/security/runbook guidance, and ADR 0015 are implemented locally. The focused Codex/Telegram suite passes with 100 tests; the complete suite passes with 215 tests and four host-boundary skips. Publication and deployment have not been requested.
 - Arbitrary inbound Codex document support, focused tests, configuration, help text, operational guidance, README/architecture/security documentation, and ADR 0014 are implemented and deployed on `main`. The focused Telegram/Codex suite passes with 90 tests; the complete suite passes with 205 tests and four host-boundary skips.
@@ -34,7 +36,7 @@ Last updated: 2026-08-03
 
 ## Next steps
 
-1. Exercise `download_team_logo` in a fresh real Telegram turn to confirm model-to-MCP invocation; the same deployed gateway and media path have already downloaded all eight required crests successfully.
+1. Publish and deploy the public-download gateway, then exercise one rejected and one approved `download_file` request in Telegram and verify exact bytes plus path.
 2. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
 3. Verify one captionless and one captioned Telegram photo end to end.
 4. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
@@ -43,7 +45,7 @@ Last updated: 2026-08-03
 
 ## Assumptions and risks
 
-- The per-tool Codex approval override is intentionally limited to `git-publish.publish`; broadening it to other MCP write tools would weaken independent review.
+- Per-tool Codex approval overrides are intentionally limited to `git-publish.publish`, `public-download.download_file`, and the fixed `api-football.download_team_logo` write. Publication and generic download retain separate authoritative bot-side boundaries; the crest operation fixes every target itself. Broadening overrides to other MCP write tools would weaken independent review.
 - The Telegram gateway approval is mandatory, memory-only, single-use, destination/commit-bound, and expires after five minutes.
 - The bot process holds narrow publication authority. Restrict and revoke the repository deploy key if the host or bot process is compromised.
 - The optional transcription call is separately billed and cannot be interrupted once its synchronous worker-thread request has started; session invalidation prevents the result from being submitted to a replacement Codex thread.

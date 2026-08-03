@@ -16,6 +16,7 @@ from PIL import Image
 import telegram_bot
 from codex_backend import CodexTurnResult
 from git_publish import GitPublishApproval
+from public_download import DownloadApproval
 from telegram_bot import (
     CodexApprovalBroker,
     DEFAULT_IMAGE_PROMPT,
@@ -248,6 +249,27 @@ class TelegramWorkerTests(unittest.TestCase):
 
 
 class CodexApprovalBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_approval_is_exact_owner_bound_and_one_shot(self) -> None:
+        broker = CodexApprovalBroker()
+        prompt_message = SimpleNamespace(edit_text=AsyncMock())
+        bot = SimpleNamespace(send_message=AsyncMock(return_value=prompt_message))
+        request = DownloadApproval("https://example.com/report.pdf", "data/raw/report.pdf", 50_000_000)
+
+        approval = asyncio.create_task(broker.request_download(bot, 99, 42, request))
+        await asyncio.sleep(0)
+        token = next(iter(broker.pending))
+        self.assertFalse(broker.resolve(token, 7, True))
+        self.assertTrue(broker.resolve(token, 42, True))
+
+        self.assertTrue(await approval)
+        prompt = bot.send_message.await_args.kwargs["text"]
+        self.assertIn(request.url, prompt)
+        self.assertIn(request.destination, prompt)
+        self.assertIn("50 MB", prompt)
+        callback_data = bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data
+        self.assertEqual(callback_data, f"codex-download:{token}:allow")
+        self.assertFalse(broker.resolve(token, 42, True))
+
     async def test_publication_approval_is_sent_directly_to_owner_chat(self) -> None:
         broker = CodexApprovalBroker()
         prompt_message = SimpleNamespace(edit_text=AsyncMock())

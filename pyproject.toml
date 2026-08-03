@@ -17,6 +17,7 @@ codex-safe-launcher = "codex_runtime:main"
 api-football = "api_football_cli:main"
 api-football-mcp = "api_football_mcp:main"
 git-publish-mcp = "git_publish_mcp:main"
+public-download-mcp = "public_download_mcp:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -24,4 +25,4 @@ testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["agent", "api_football", "api_football_cli", "api_football_mcp", "git_publish", "git_publish_mcp", "codex_backend", "codex_login", "codex_runtime", "router", "owner_trace", "usage", "worker", "telegram_bot", "deployment", "deployer", "self_deployment"]
+py-modules = ["agent", "api_football", "api_football_cli", "api_football_mcp", "git_publish", "git_publish_mcp", "public_download", "public_download_mcp", "codex_backend", "codex_login", "codex_runtime", "router", "owner_trace", "usage", "worker", "telegram_bot", "deployment", "deployer", "self_deployment"]

@@ -21,3 +21,5 @@ Keep the neutral `Response sent.` activity label introduced by ADR 0016, but rem
 ## Consequences
 
 Official team crests can be downloaded without broad command networking, API credential exposure, or arbitrary URL fetching. The feature is deliberately specific to API-Football team PNGs; unrelated public assets remain unavailable. A live Telegram turn must confirm the MCP tool call, eight saved PNGs, regenerated charts, and requested Telegram delivery.
+
+ADR 0018 subsequently adds a separate owner-approved gateway for unrelated credential-free public HTTPS files. The stricter fixed crest operation remains preferred for API-Football team logos.

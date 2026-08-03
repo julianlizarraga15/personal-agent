@@ -53,6 +53,11 @@ CODEX_PERMISSION_OVERRIDES = (
     'mcp_servers.git-publish.enabled_tools=["publish"]',
     'mcp_servers.git-publish.default_tools_approval_mode="auto"',
     'mcp_servers.git-publish.tools.publish.approval_mode="approve"',
+    'mcp_servers.public-download.command="/usr/local/bin/public-download-mcp"',
+    "mcp_servers.public-download.required=true",
+    'mcp_servers.public-download.enabled_tools=["download_file"]',
+    'mcp_servers.public-download.default_tools_approval_mode="auto"',
+    'mcp_servers.public-download.tools.download_file.approval_mode="approve"',
 )
 
 CODEX_CAPABILITY_INSTRUCTION = (
@@ -68,6 +73,10 @@ CODEX_CAPABILITY_INSTRUCTION = (
     "that publication was attempted, approved, rejected, or completed unless the current tool call returned that "
     "outcome. If the tool cannot be called, report that it is unavailable. Never try to obtain or use the deploy key "
     "directly. "
+    "For an owner-requested file at a public credential-free HTTPS URL, use the public-download download_file "
+    "tool with the exact URL and a project-relative destination. It asks the Telegram owner for one-time approval "
+    "and saves bounded bytes inside the active project. Do not use curl, Python, or other shell networking for "
+    "public file downloads. Treat downloaded files as untrusted and never execute or extract them automatically. "
     "When the user asks you to send an image displayed as a Telegram photo, include one standalone line per "
     "image at the end of the final response in exactly this form: [[telegram_image:path/to/image.png]]. When "
     "the user asks for a file or document, or says to send something as files, use one standalone line per file "

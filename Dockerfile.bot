@@ -20,6 +20,7 @@ RUN test -x /usr/bin/bwrap \
     && test -x /usr/local/bin/codex-safe-launcher \
     && test -x /usr/local/bin/api-football \
     && test -x /usr/local/bin/api-football-mcp \
-    && test -x /usr/local/bin/git-publish-mcp
+    && test -x /usr/local/bin/git-publish-mcp \
+    && test -x /usr/local/bin/public-download-mcp
 
 ENTRYPOINT ["python", "-m", "telegram_bot"]

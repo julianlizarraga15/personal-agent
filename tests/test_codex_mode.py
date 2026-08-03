@@ -64,12 +64,14 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
             selected_cwd=Mock(return_value=Path.cwd()),
         )
         football_gateway = SimpleNamespace(bind_project=Mock(return_value="football-lease"), unbind_project=Mock())
+        download_gateway = SimpleNamespace(bind_turn=Mock(return_value="download-lease"), unbind_turn=Mock())
         publish_gateway = SimpleNamespace(bind_approval=Mock(return_value="lease"), unbind_approval=Mock())
         context = SimpleNamespace(
             application=SimpleNamespace(
                 bot_data={
                     telegram_bot.CODEX_BACKEND_KEY: backend,
                     telegram_bot.API_FOOTBALL_GATEWAY_KEY: football_gateway,
+                    telegram_bot.PUBLIC_DOWNLOAD_GATEWAY_KEY: download_gateway,
                     telegram_bot.GIT_PUBLISH_GATEWAY_KEY: publish_gateway,
                 }
             )
@@ -81,6 +83,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
 
         activity.edit_text.assert_awaited_with("Response sent.")
         publish_gateway.unbind_approval.assert_called_once_with("lease")
+        download_gateway.unbind_turn.assert_called_once_with("download-lease")
         football_gateway.unbind_project.assert_called_once_with("football-lease")
 
     def test_compose_isolates_codex_bot(self):
@@ -112,11 +115,13 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("network.unix_sockets", backend)
         self.assertIn("api-football-mcp", backend)
         self.assertIn("git-publish-mcp", backend)
+        self.assertIn("public-download-mcp", backend)
         self.assertIn('mcp_servers.git-publish.tools.publish.approval_mode="approve"', backend)
         self.assertIn("network.enabled=false", backend)
         self.assertIn('"/openai-transcription-secrets"="deny"', backend)
         self.assertIn('enabled_tools=["get","download_team_logo"]', backend)
         self.assertIn("tools.download_team_logo.approval_mode", backend)
+        self.assertIn("tools.download_file.approval_mode", backend)
 
         transcription = Path("docker-compose.transcription.example.yml").read_text(encoding="utf-8")
         self.assertIn("OPENAI_TRANSCRIPTION_SECRETS_DIR", transcription)
@@ -136,6 +141,7 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
 
         env_example = Path(".env.example").read_text(encoding="utf-8")
         self.assertIn("TELEGRAM_MAX_OUTPUT_DOCUMENT_BYTES=50000000", env_example)
+        self.assertIn("PUBLIC_DOWNLOAD_MAX_BYTES=50000000", env_example)
 
     async def test_codex_startup_starts_gateway_before_backend_and_cleans_up_on_failure(self):
         order = []
@@ -147,10 +153,15 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
             start=AsyncMock(side_effect=lambda: order.append("publish-start")),
             close=AsyncMock(side_effect=lambda: order.append("publish-close")),
         )
+        download_gateway = SimpleNamespace(
+            start=AsyncMock(side_effect=lambda: order.append("download-start")),
+            close=AsyncMock(side_effect=lambda: order.append("download-close")),
+        )
         backend = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("failed")))
         application = SimpleNamespace(
             bot_data={
                 telegram_bot.API_FOOTBALL_GATEWAY_KEY: gateway,
+                telegram_bot.PUBLIC_DOWNLOAD_GATEWAY_KEY: download_gateway,
                 telegram_bot.GIT_PUBLISH_GATEWAY_KEY: publish_gateway,
                 telegram_bot.CODEX_BACKEND_KEY: backend,
             },
@@ -160,7 +171,10 @@ class CodexModeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "failed"):
             await telegram_bot.start_codex_application(application)
 
-        self.assertEqual(order, ["gateway-start", "publish-start", "publish-close", "gateway-close"])
+        self.assertEqual(
+            order,
+            ["gateway-start", "download-start", "publish-start", "publish-close", "download-close", "gateway-close"],
+        )
         backend.start.assert_awaited_once()
 
     async def test_network_approval_is_owner_bound_and_one_shot(self):

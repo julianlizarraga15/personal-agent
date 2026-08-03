@@ -28,6 +28,7 @@
 - Restart the bot and confirm the conversation is fresh while ChatGPT authentication still works.
 - Attempt an outside-workspace write, shell network access, Docker access, and Git push; each must fail without an approval prompt.
 - Ask Codex to use the API-Football MCP tool for `status`. With a key it should return status JSON; without one it should clearly report that analytics are not configured. Then request one known team crest and confirm `download_team_logo` creates a valid `assets/team-crests/<id>.png` only inside the selected project. Confirm sandboxed commands cannot read the key, `/trace-state`, `.env`, any Unix socket, or direct network. Use `api-football get status` only as a trusted container-side diagnostic.
+- Request a small public HTTPS file through `download_file`. Confirm Telegram displays the exact URL, relative destination, and size ceiling; rejection creates nothing, while **Download once** creates the expected bytes only beneath the selected project. Confirm HTTP, credentials in the URL, IP literals, private/local DNS, cross-host redirects, oversized bodies, traversal, protected paths, symlinked parents, and credential-like filenames fail safely. Confirm shell networking remains blocked.
 
 ## Common failures
 
@@ -44,6 +45,7 @@
 - Audio transcription unavailable: verify the local transcription override is included, the private directory contains a non-empty `api-key`, and the mount is read-only at `/openai-transcription-secrets`. Do not print the key. Missing configuration is non-fatal; provider failures return a stable retry message.
 - Trace unavailable: verify the `trace-state` Docker volume, `TRACE_DB_PATH`, free space, and database ownership. Tracing resumes on later writes after storage recovers; stdout deliberately does not contain the omitted private content.
 - API-Football unavailable: verify the bot owns `/run/api-football.sock`, the private host `.env` contains the dashboard key, and `/trace-state/api-football-quota.json` is writable. Do not print either file. A missing key is non-fatal; an insecure socket startup or unavailable quota store fails requests safely.
+- Public download unavailable: verify the bot owns `/run/public-download.sock`, the URL is credential-free HTTPS on port 443, the destination is relative to the selected project, and the file is within `PUBLIC_DOWNLOAD_MAX_BYTES`. A redirect to another host must be requested separately so the owner can approve that final URL explicitly.
 - Deployment remains queued: inspect deployer logs and verify its heartbeat under `workspace/.personal-agent-state`.
 - State storage full/unavailable: free space or restore the mount. The deployer retains an active request when failure state cannot be persisted and resumes it after restart. The bot continues answering when the usage ledger or trace database cannot be written, reports durable usage totals as unavailable or incomplete, logs trace write loss without private content, and resumes recording future requests when storage recovers.
 
