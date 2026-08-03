@@ -24,17 +24,17 @@ Last updated: 2026-08-03
 
 ## Last stopping point
 
-- The earlier `curl` fix was published as `1107c09` and deployed, but its live retry failed. The replacement fixed team-logo gateway, active-project binding, MCP tool, tests, documentation, and ADR 0017 are now implemented locally. The focused suite passes with 122 tests and three host-boundary skips; the complete suite passes with 222 tests and five host-boundary skips. A disposable image build succeeded, and its real fixed-host probe downloaded team 435 as a 90,381-byte valid PNG. Publication, redeployment, and a real Telegram tool turn are pending.
+- The earlier `curl` fix was published as `1107c09` and deployed, but its live retry failed. The replacement fixed team-logo gateway, active-project binding, MCP tool, tests, documentation, and ADR 0017 were published as `bedf2cc` and deployed. The focused suite passes with 122 tests and three host-boundary skips; the complete suite passes with 222 tests and five host-boundary skips. The gateway downloaded all eight required 150×150 PNG crests into the selected analysis project, and the crest-enhanced combined chart plus both social cards were regenerated and visually inspected.
 - Outbound safe workspace document delivery, tests, configuration, help text, README/architecture/security/runbook guidance, and ADR 0015 are implemented locally. The focused Codex/Telegram suite passes with 100 tests; the complete suite passes with 215 tests and four host-boundary skips. Publication and deployment have not been requested.
 - Arbitrary inbound Codex document support, focused tests, configuration, help text, operational guidance, README/architecture/security documentation, and ADR 0014 are implemented and deployed on `main`. The focused Telegram/Codex suite passes with 90 tests; the complete suite passes with 205 tests and four host-boundary skips.
 - Incoming Codex image support, tests, documentation, and ADR 0013 were committed as `3307321`, published directly to `main`, and deployed. The full local suite passes: 201 tests passed and four host-boundary tests skipped.
 - The earlier Codex audio implementation, tests, configuration example, and documentation are committed and published directly to `main`.
-- The live `personal-agent-bot-1` runs image `sha256:e4e8994b6e64fbb35c3e26cd21ba0a7839128c5d40cf28cc06cd5e536e966ba0`; it is healthy with zero restarts, uses the existing Codex authentication volume, and has `/git-publish-secrets` and `/openai-transcription-secrets` mounted read-only. A briefly created directory-named Compose project was removed before the correct `personal-agent` service was recreated.
+- The live `personal-agent-bot-1` runs image `sha256:dda36c0091cd92b779eb9ce62017206d18ee2aac4f697414ff3f4f93e6ca77ba`; it is healthy with zero restarts, uses the existing Codex authentication volume, and has `/git-publish-secrets` and `/openai-transcription-secrets` mounted read-only. A briefly created directory-named Compose project was removed before the correct `personal-agent` service was recreated.
 - The previously validated combined base, Git-publication example, and transcription example Compose configuration remains unchanged by the image-input work.
 
 ## Next steps
 
-1. Run focused and complete tests, publish and deploy the fixed team-logo gateway, then retry all eight crests from Telegram and verify the saved PNGs plus regenerated charts.
+1. Exercise `download_team_logo` in a fresh real Telegram turn to confirm model-to-MCP invocation; the same deployed gateway and media path have already downloaded all eight required crests successfully.
 2. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
 3. Verify one captionless and one captioned Telegram photo end to end.
 4. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
