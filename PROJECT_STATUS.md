@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 ## Current state
 
@@ -24,6 +24,8 @@ Last updated: 2026-08-03
 - End-to-end acceptance is still pending: commit `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c` has not yet been confirmed pushed to GitHub through a real Telegram **Publish once** approval after `07e3353`.
 
 ## Last stopping point
+
+- On 2026-08-04, the working tree is clean on `main` and matches `origin/main` at `980ce17` (`Record public downloader deployment`). No new local changes or blockers were observed.
 
 - The generic public-download gateway, keyless MCP adapter, Telegram approval flow, active-project binding, 50 MB hard ceiling with lower configuration, tests, runtime configuration, help text, documentation, and ADR 0018 were published as `fe305d9` and deployed. The focused download/Codex/Telegram suite passes with 118 tests and one host-boundary skip; the complete suite passes with 238 tests and six host-boundary skips. A disposable image build succeeded, and its hardened downloader fetched and atomically stored the 559-byte `https://example.com/` response with SHA-256 `ff67a9d764d6a2367a187734e697f6a53217db9a21c101d410a113ca871a299d`; the temporary probe was removed. Live Telegram acceptance is pending.
 - The earlier `curl` fix was published as `1107c09` and deployed, but its live retry failed. The replacement fixed team-logo gateway, active-project binding, MCP tool, tests, documentation, and ADR 0017 were published as `bedf2cc` and deployed. The focused suite passes with 122 tests and three host-boundary skips; the complete suite passes with 222 tests and five host-boundary skips. The gateway downloaded all eight required 150×150 PNG crests into the selected analysis project, and the crest-enhanced combined chart plus both social cards were regenerated and visually inspected.
