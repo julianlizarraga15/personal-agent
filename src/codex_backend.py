@@ -596,6 +596,38 @@ class CodexBackend:
             raise CodexTurnDiscarded()
         response = final_message_from_items(completed_items)
         if response is None:
+            # A completed turn can occasionally arrive without its final
+            # item notification. Recover the authoritative turn payload.
+            try:
+                thread_read = await session.thread.read(include_turns=True)
+                thread = getattr(thread_read, "thread", thread_read)
+                turns = getattr(thread, "turns", ()) or ()
+                matching_turn = next(
+                    (candidate for candidate in reversed(turns) if getattr(candidate, "id", None) == getattr(handle, "id", None)),
+                    turns[-1] if turns else None,
+                )
+                recovered_items = getattr(matching_turn, "items", ()) if matching_turn is not None else ()
+                response = final_message_from_items(list(recovered_items))
+                LOGGER.info(
+                    "Codex final response recovery turn_id=%s streamed_items=%s recovered_items=%s recovered=%s",
+                    getattr(handle, "id", "unknown"),
+                    len(completed_items),
+                    len(recovered_items),
+                    response is not None,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Codex final response recovery failed turn_id=%s streamed_items=%s",
+                    getattr(handle, "id", "unknown"),
+                    len(completed_items),
+                    exc_info=True,
+                )
+        if response is None:
+            LOGGER.warning(
+                "Codex completed without final agent message turn_id=%s streamed_items=%s",
+                getattr(handle, "id", "unknown"),
+                len(completed_items),
+            )
             raise CodexBackendError("Codex finished without returning a response. Please try again.")
         visible_text, image_paths, file_paths = telegram_attachments_from_message(response)
         return CodexTurnResult(

@@ -46,10 +46,16 @@ class FakeThread:
         self.id = "thread-1"
         self.turns = list(turns)
         self.prompts = []
+        self.read_response = None
 
     async def turn(self, prompt):
         self.prompts.append(prompt)
         return self.turns.pop(0)
+
+    async def read(self, *, include_turns=False):
+        if self.read_response is not None:
+            return self.read_response
+        return SimpleNamespace(thread=SimpleNamespace(turns=[]))
 
 
 class FakeClient:
@@ -254,6 +260,28 @@ class CodexBackendTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(CodexBackendError, "without returning a response"):
             await backend.run_turn(42, "hello", default_cwd=Path("/tmp"))
+
+    async def test_recovers_final_response_from_thread_read(self):
+        completed = event(
+            "turn/completed",
+            turn=SimpleNamespace(status=SimpleNamespace(value="completed"), error=None, id="turn-1"),
+        )
+        thread = FakeThread([FakeTurnHandle([completed])])
+        recovered_item = SimpleNamespace(
+            type="agentMessage",
+            text="recovered",
+            phase=SimpleNamespace(value="final_answer"),
+        )
+        thread.read_response = SimpleNamespace(
+            thread=SimpleNamespace(
+                turns=[SimpleNamespace(id="turn-1", items=[recovered_item])]
+            )
+        )
+        backend = CodexBackend(FakeClient([thread]))
+
+        result = await backend.run_turn(42, "hello", default_cwd=Path("/tmp"))
+
+        self.assertEqual(result.text, "recovered")
 
     def test_event_status_and_final_message_mapping(self):
         command = SimpleNamespace(type="commandExecution")
