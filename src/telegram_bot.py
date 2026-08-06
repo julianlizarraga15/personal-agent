@@ -58,6 +58,7 @@ GIT_PUBLISH_GATEWAY_KEY = "git_publish_gateway"
 PUBLIC_DOWNLOAD_GATEWAY_KEY = "public_download_gateway"
 CODEX_STATUS_DEBOUNCE_SECONDS = 1.5
 CODEX_APPROVAL_TIMEOUT_SECONDS = 300
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 STATUS_MESSAGES = {
     "cloning repository": "Cloning repository…",
@@ -246,17 +247,65 @@ def _telegram_html(text: str) -> str:
     return renderer.rendered()
 
 
+def _telegram_response_chunks(text: str) -> list[str]:
+    """Split Markdown into chunks safe for both Telegram rendering paths."""
+
+    chunks: list[str] = []
+    remaining = text
+
+    while remaining:
+        rendered = _telegram_html(remaining)
+        if len(remaining) <= TELEGRAM_MAX_MESSAGE_LENGTH and len(rendered) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+            chunks.append(remaining)
+            break
+
+        upper = min(len(remaining), TELEGRAM_MAX_MESSAGE_LENGTH)
+        if len(_telegram_html(remaining[:upper])) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+            safe_end = upper
+        else:
+            # Rendering can add HTML escaping and tags, so find the largest
+            # raw-text prefix that remains within Telegram's limit first.
+            low, high = 1, upper
+            safe_end = 1
+            while low <= high:
+                middle = (low + high) // 2
+                if len(_telegram_html(remaining[:middle])) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+                    safe_end = middle
+                    low = middle + 1
+                else:
+                    high = middle - 1
+
+        # Prefer the last paragraph, line, or word boundary that is still
+        # safe. If none exists, safe_end is the hard character split.
+        boundary_candidates = [
+            match.end()
+            for match in re.finditer(r"\n\n|\n|\s+", remaining[:safe_end])
+            if match.end() < safe_end
+        ]
+        for candidate in reversed(boundary_candidates):
+            if len(_telegram_html(remaining[:candidate])) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+                safe_end = candidate
+                break
+
+        chunks.append(remaining[:safe_end])
+        remaining = remaining[safe_end:]
+
+    # Preserve the historical one-reply attempt for an empty agent response.
+    return chunks or [text]
+
+
 async def _reply_agent_response(message: object, text: str) -> None:
     """Deliver a formatted agent answer, falling back if Telegram rejects it."""
 
-    try:
-        await message.reply_text(  # type: ignore[attr-defined]
-            _telegram_html(text),
-            parse_mode="HTML",
-        )
-    except BadRequest:
-        LOGGER.warning("formatted agent response rejected by Telegram; retrying as plain text")
-        await message.reply_text(text)  # type: ignore[attr-defined]
+    for chunk in _telegram_response_chunks(text):
+        try:
+            await message.reply_text(  # type: ignore[attr-defined]
+                _telegram_html(chunk),
+                parse_mode="HTML",
+            )
+        except BadRequest:
+            LOGGER.warning("formatted agent response rejected by Telegram; retrying as plain text")
+            await message.reply_text(chunk)  # type: ignore[attr-defined]
 
 
 class WorkerExecutionError(RuntimeError):

@@ -32,6 +32,8 @@ from telegram_bot import (
     _reply_codex_files,
     _reply_codex_images,
     _telegram_html,
+    _telegram_response_chunks,
+    TELEGRAM_MAX_MESSAGE_LENGTH,
     _validate_image,
     required_settings,
     run_docker_worker,
@@ -320,6 +322,68 @@ class AgentResponseFormattingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.reply_text.await_args_list[0].kwargs["parse_mode"], "HTML")
         self.assertEqual(message.reply_text.await_args_list[1].args[0], "A **bold** answer")
         self.assertNotIn("parse_mode", message.reply_text.await_args_list[1].kwargs)
+
+    async def test_long_response_sends_all_chunks_in_order(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        text = "\n\n".join(f"Paragraph {index}: " + ("word " * 900) for index in range(4))
+
+        await _reply_agent_response(message, text)
+
+        replies = [call.args[0] for call in message.reply_text.await_args_list]
+        self.assertGreater(len(replies), 1)
+        self.assertEqual("".join(_telegram_response_chunks(text)), text)
+        self.assertEqual("".join(replies), "".join(_telegram_html(chunk) for chunk in _telegram_response_chunks(text)))
+        self.assertTrue(all("parse_mode" in call.kwargs for call in message.reply_text.await_args_list))
+
+    def test_long_response_prefers_readable_boundaries(self) -> None:
+        text = "First paragraph with several words.\n\nSecond paragraph follows."
+        with patch.object(telegram_bot, "TELEGRAM_MAX_MESSAGE_LENGTH", 42):
+            chunks = _telegram_response_chunks(text)
+
+        self.assertEqual("".join(chunks), text)
+        self.assertTrue(chunks[0].endswith("\n\n") or chunks[0].endswith(" "))
+        self.assertTrue(all(len(_telegram_html(chunk)) <= 42 for chunk in chunks))
+
+    def test_oversized_single_line_is_hard_split_safely(self) -> None:
+        text = "x" * (TELEGRAM_MAX_MESSAGE_LENGTH + 500)
+
+        chunks = _telegram_response_chunks(text)
+
+        self.assertEqual("".join(chunks), text)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= TELEGRAM_MAX_MESSAGE_LENGTH for chunk in chunks))
+        self.assertTrue(all(len(_telegram_html(chunk)) <= TELEGRAM_MAX_MESSAGE_LENGTH for chunk in chunks))
+
+    async def test_html_parse_failure_falls_back_per_chunk_and_continues(self) -> None:
+        html_attempts = 0
+
+        async def send_reply(*args, **kwargs):
+            nonlocal html_attempts
+            if kwargs.get("parse_mode") == "HTML":
+                html_attempts += 1
+                if html_attempts in {1, 3}:
+                    raise telegram_bot.BadRequest("chunk rejected")
+
+        message = SimpleNamespace(reply_text=AsyncMock(side_effect=send_reply))
+        text = "\n\n".join("A **formatted** paragraph " + ("word " * 20) for _ in range(3))
+        with patch.object(telegram_bot, "TELEGRAM_MAX_MESSAGE_LENGTH", 80):
+            chunks = _telegram_response_chunks(text)
+            await _reply_agent_response(message, text)
+
+        self.assertEqual(message.reply_text.await_count, len(chunks) + 2)
+        self.assertEqual(message.reply_text.await_args_list[1].args[0], chunks[0])
+        plain_replies = [call.args[0] for call in message.reply_text.await_args_list if "parse_mode" not in call.kwargs]
+        self.assertEqual(plain_replies, [chunks[0], chunks[2]])
+        self.assertGreater(message.reply_text.await_count, 3)
+
+    async def test_no_response_chunk_exceeds_telegram_limit(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        text = ("**bold** & <tag> " * 700) + "\n\n" + ("plain " * 700)
+
+        await _reply_agent_response(message, text)
+
+        for call in message.reply_text.await_args_list:
+            self.assertLessEqual(len(call.args[0]), TELEGRAM_MAX_MESSAGE_LENGTH)
 
 
 class CodexOutputImageTests(unittest.IsolatedAsyncioTestCase):
