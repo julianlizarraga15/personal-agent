@@ -1,9 +1,10 @@
 # Project status
 
-Last updated: 2026-08-04
+Last updated: 2026-08-07
 
 ## Current state
 
+- Human-readable work logging is now enabled: Telegram Codex and legacy `/run` turns append concise request/outcome/response/Git-status entries to `WORK_LOG.md` in the active project. Repository instructions require the same concise update for work completed through a local ChatGPT/Codex session. Logging is best-effort and never changes task success.
 - Live acceptance disproved the generic exact-host download design in ADR 0016. Pinned Codex 0.144.4 either blocks networking before approval, grants broad profile networking without the proxy, or applies managed-proxy domains as hard policy. Generic command networking remains disabled. ADR 0017 instead adds `download_team_logo(team_id)` to the fixed API-Football gateway: only the official media host/path and fixed `assets/team-crests/<id>.png` destination are possible. The neutral `Response sent.` activity label remains.
 - The default Telegram backend uses pinned `openai-codex==0.144.4`, ephemeral in-memory threads, a named Bubblewrap workspace permission profile, and a sanitized launcher. Telegram photos remain validated in-memory Codex SDK image inputs, and voice/audio attachments remain validated transcription inputs. Any explicit Telegram document is atomically persisted byte-for-byte under `telegram_uploads/` in the selected project and submitted to Codex by its untrusted relative workspace path. Upload admission is turn-reserved, capped at 20,000,000 bytes by default, and rejects traversal, symlinked inboxes, protected `.env` variants, recognizable credential/private-key files, and private-key content.
 - Codex final responses now distinguish photo-style `telegram_image` markers from document-only `telegram_file` markers. Both marker types are removed from visible text and share a four-attachment turn cap. Requested documents preserve original filenames and bytes, are limited to 50,000,000 bytes by default, remain confined to regular files beneath the selected project, and reject protected environment or credential/private-key material.
@@ -38,12 +39,13 @@ Last updated: 2026-08-04
 
 ## Next steps
 
-1. Exercise one rejected and one approved `download_file` request in Telegram and verify exact bytes plus path.
-2. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
-3. Verify one captionless and one captioned Telegram photo end to end.
-4. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
-5. From Telegram, request publication of the existing `mental-models` commit, confirm the fixed remote/branch/commit card, approve once, and verify GitHub `main` reaches `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
-6. Record the end-to-end results here. If any fail, use content-free bot logs and the Codex runtime log rather than inferring the failure layer from model prose.
+1. Redeploy the bot image and confirm one successful Telegram turn creates/appends `WORK_LOG.md` in the selected project.
+2. Exercise one rejected and one approved `download_file` request in Telegram and verify exact bytes plus path.
+3. Verify captioned and captionless SVG/PDF documents end to end, confirm placement in the selected project's `telegram_uploads/`, and confirm a later text turn can refer to the persisted file.
+4. Verify one captionless and one captioned Telegram photo end to end.
+5. Verify one captionless and one captioned Telegram voice note end to end, then confirm transcription activity in the OpenAI dashboard. Missing transcription configuration remains healthy degraded mode.
+6. From Telegram, request publication of the existing `mental-models` commit, confirm the fixed remote/branch/commit card, approve once, and verify GitHub `main` reaches `ea523361df1f31c583b8f7bafb3fcd9a65e2b40c`.
+7. Record the end-to-end results here. If any fail, use content-free bot logs and the Codex runtime log rather than inferring the failure layer from model prose.
 
 ## Assumptions and risks
 

@@ -14,6 +14,7 @@ At the start of a new session, read `PROJECT_STATUS.md` when it exists. Treat `/
 - Publishing rule: when the repository owner asks to publish completed work, commit and push directly to `main`; do not create pull requests. Only use another branch or workflow when the repository owner explicitly requests it.
 - Prefer small, reversible changes. Preserve existing user changes and do not delete files unless the task explicitly requires it.
 - Update documentation and tests when behavior or interfaces change.
+- After completing work in this repository, append a concise record to `WORK_LOG.md` with the date, request, outcome, and next step or remaining risk. Keep it human-readable and do not include secrets or large command output.
 - Do not commit `.env`, credentials, tokens, private keys, Docker socket data, or generated caches.
 
 ## Validation

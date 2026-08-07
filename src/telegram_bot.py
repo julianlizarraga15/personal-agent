@@ -48,6 +48,7 @@ from owner_trace import TraceRecorder, binary_metadata, configured_trace_store, 
 from public_download import DEFAULT_MAX_BYTES as DEFAULT_PUBLIC_DOWNLOAD_MAX_BYTES
 from public_download import DownloadApproval, PublicDownloadGateway
 from usage import ModelUsage, PRICING_AS_OF, SessionUsage, UsageStore
+from work_log import record_work
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1274,6 +1275,8 @@ async def _run_codex_turn(
             request,
         )
     )
+    outcome = "failed"
+    response_text = ""
     try:
         LOGGER.info("Codex turn started user_id=%s", user_id)
         response = await backend.run_turn(
@@ -1287,6 +1290,7 @@ async def _run_codex_turn(
         )
     except CodexTurnDiscarded:
         LOGGER.info("Codex turn discarded user_id=%s reason=session_replaced", user_id)
+        outcome = "discarded: session replaced"
         return
     except CodexBackendError as exc:
         LOGGER.warning("Codex turn failed user_id=%s error_type=%s", user_id, type(exc).__name__)
@@ -1294,6 +1298,7 @@ async def _run_codex_turn(
         final_status = "Codex failed."
     else:
         LOGGER.info("Codex turn completed user_id=%s", user_id)
+        response_text = response.text
         await _reply_agent_response(message, response.text)
         failed_images = await _reply_codex_images(message, response)
         failed_files = await _reply_codex_files(message, response)
@@ -1308,10 +1313,12 @@ async def _run_codex_turn(
                 "Each file must be safe, readable, inside the selected project, and within the size limit."
             )
         final_status = "Response sent."
+        outcome = "completed"
     finally:
         publish_gateway.unbind_approval(publish_lease)
         download_gateway.unbind_turn(download_lease)
         football_gateway.unbind_project(football_lease)
+        record_work(selected_cwd, source="Telegram", request=text, outcome=outcome, response=response_text)
     editor = getattr(activity_message, "edit_text", None)
     if editor is not None:
         try:
@@ -2127,6 +2134,7 @@ async def _run_task(message: object, session: ConversationSession, task: str, us
         if SESSIONS.get(user_id) is session:
             await message.reply_text(f"Worker failed.\n{exc}")
         trace.finish("failed", {"error_type": type(exc).__name__, "error": str(exc)})
+        record_work(Path(session.project), source="Telegram /run", request=task, outcome=f"failed: {exc}")
         editor = getattr(activity_message, "edit_text", None)
         if editor is not None:
             await editor(f"Failed · turn {turn_id}")
@@ -2135,6 +2143,7 @@ async def _run_task(message: object, session: ConversationSession, task: str, us
             await message.reply_text(summary.format())
             session.branch = summary.branch
             session.remember(task, summary.format())
+        record_work(Path(session.project), source="Telegram /run", request=task, outcome="completed", response=summary.format())
         trace.finish("completed", summary.__dict__)
         editor = getattr(activity_message, "edit_text", None)
         if editor is not None:
